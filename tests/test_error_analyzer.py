@@ -22,7 +22,7 @@ def sample_errors() -> List[ErrorLog]:
             error_type="NullPointerException",
             error_message="NullPointerException: user is null",
             stacktrace="java.lang.NullPointerException\n\tat com.example.UserService.getUser(UserService.java:123)",
-            http_status="500",
+            http_status=500,
             http_method="GET",
             http_url="/api/users/123",
             db_system=None,
@@ -40,7 +40,7 @@ def sample_errors() -> List[ErrorLog]:
             error_type="TimeoutException",
             error_message="TimeoutException: Database connection timeout",
             stacktrace="java.util.concurrent.TimeoutException\n\tat com.example.PaymentService.process(PaymentService.java:45)",
-            http_status="503",
+            http_status=503,
             http_method="POST",
             http_url="/api/checkout",
             db_system="postgresql",
@@ -314,7 +314,7 @@ class TestSigNozRepository:
         assert errors[0].trace_id == "trace-123"
         assert errors[0].service_name == "api-service"
         assert errors[0].error_type == "RuntimeException"
-        assert errors[0].http_status == "500"
+        assert errors[0].http_status == 500
         await repo.close()
 
     @pytest.mark.asyncio

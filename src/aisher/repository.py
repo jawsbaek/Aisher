@@ -51,14 +51,14 @@ SELECT
     arrayStringConcat(t.events, '\n') AS related_events
 
 FROM {database}.distributed_signoz_index_v3 AS t
-INNER JOIN {database}.distributed_signoz_error_index_v2 AS e
+LEFT JOIN {database}.distributed_signoz_error_index_v2 AS e
     ON t.trace_id = e.traceID
     AND t.span_id = e.spanID
 
 WHERE
     -- 성능 최적화를 위한 파티션 키 활용
     t.ts_bucket_start >= (toUnixTimestamp(now()) - %(time_window_seconds)s)
-    AND t.timestamp >= (now() - INTERVAL %(time_window_minutes)s MINUTE)
+    AND t.timestamp >= (now() - toIntervalSecond(%(time_window_seconds)s))
     AND t.has_error = true
 
 ORDER BY t.timestamp DESC
@@ -136,12 +136,10 @@ class SigNozRepository:
             raise ValueError(f"time_window_minutes must be between 1 and 10080, got {time_window_minutes}")
 
         # Retry logic with exponential backoff
-        last_exception = None
         for attempt in range(settings.MAX_RETRIES):
             try:
                 return await self._fetch_errors_internal(limit, time_window_minutes)
             except (DatabaseError, asyncio.TimeoutError) as e:
-                last_exception = e
                 if attempt < settings.MAX_RETRIES - 1:
                     wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
                     logger.warning(
@@ -152,7 +150,7 @@ class SigNozRepository:
                     await asyncio.sleep(wait_time)
                 else:
                     logger.error(
-                        f"Query failed after {settings.MAX_RETRIES} attempts",
+                        f"All retries exhausted. Query failed after {settings.MAX_RETRIES} attempts: {e}",
                         extra={"error_type": type(e).__name__},
                         exc_info=True
                     )
@@ -182,7 +180,6 @@ class SigNozRepository:
                 query,
                 parameters={
                     'limit_val': limit,
-                    'time_window_minutes': time_window_minutes,
                     'time_window_seconds': time_window_seconds
                 }
             ),
@@ -203,8 +200,10 @@ class SigNozRepository:
                 span_attributes, resource_attributes, related_events
             ) = row
 
-            # Smart Truncation: Preserve error context in stacktrace
+            # Smart Truncation: Preserve error context in stacktrace and limit JSON sizes
             truncated_stack = self._truncate_stacktrace(stacktrace)
+            truncated_span_attrs = self._truncate_json_attribute(span_attributes)
+            truncated_resource_attrs = self._truncate_json_attribute(resource_attributes)
 
             logs.append(ErrorLog(
                 trace_id=trace_id,
@@ -212,16 +211,16 @@ class SigNozRepository:
                 timestamp=timestamp,
                 service_name=service_name,
                 span_name=span_name,
-                error_type=error_type or "Unknown",
-                error_message=error_message or "No message",
+                error_type=error_type if error_type is not None else "Unknown",
+                error_message=error_message if error_message is not None else "No message",
                 stacktrace=truncated_stack,
-                http_status=http_status or None,
+                http_status=int(http_status) if http_status else None,
                 http_method=http_method or None,
                 http_url=http_url or None,
                 db_system=db_system or None,
                 db_operation=db_operation or None,
-                span_attributes=span_attributes or None,
-                resource_attributes=resource_attributes or None,
+                span_attributes=truncated_span_attrs,
+                resource_attributes=truncated_resource_attrs,
                 related_events=related_events or None
             ))
 
@@ -246,6 +245,24 @@ class SigNozRepository:
             "\n...[truncated]...\n" +
             stacktrace[-settings.STACK_TAIL_LENGTH:]
         )
+
+    def _truncate_json_attribute(self, json_str: Optional[str]) -> Optional[str]:
+        """
+        Truncate JSON attribute strings to prevent token overflow.
+
+        Args:
+            json_str: JSON string to truncate
+
+        Returns:
+            Truncated JSON string or None
+        """
+        if not json_str:
+            return None
+
+        if len(json_str) <= settings.JSON_ATTR_MAX_LENGTH:
+            return json_str
+
+        return json_str[:settings.JSON_ATTR_MAX_LENGTH] + "...[truncated]"
 
     async def ping(self) -> bool:
         """
