@@ -44,11 +44,23 @@ Input format: TOON (Token-Oriented Object Notation)
 - Format: array_name[count]{columns}:
 - Each line after header is a data row
 
+Available context per error:
+- trace_id, span_id: Distributed tracing identifiers for cross-service correlation
+- timestamp: When the error occurred
+- service_name, span_name: Service and operation context (e.g., "api-gateway", "GET /api/checkout")
+- error_type, error_message, stacktrace: Exception details and stack trace
+- http_status, http_method, http_url: HTTP context (if applicable)
+- db_system, db_operation: Database context (if applicable, e.g., "mysql", "SELECT")
+- span_attributes: Custom span metadata as JSON (e.g., user_id, request_id)
+- resource_attributes: Infrastructure info as JSON (e.g., k8s.pod.name, service.version)
+- related_events: Event timeline before error occurrence (newline separated)
+
 Task:
-1. Identify the PRIMARY root cause (not symptoms)
-2. Assess severity and business impact
-3. Provide actionable remediation steps
-4. Suggest monitoring improvements
+1. Identify the PRIMARY root cause using ALL available context (not just symptoms)
+2. Cross-reference service interactions via trace_id when analyzing distributed errors
+3. Assess severity and business impact
+4. Provide actionable remediation steps
+5. Suggest monitoring improvements
 
 Output as JSON:
 {

@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     STACK_MAX_LENGTH: int = 600
     STACK_HEAD_LENGTH: int = 250
     STACK_TAIL_LENGTH: int = 350
+    JSON_ATTR_MAX_LENGTH: int = 2000  # Max length for JSON attributes to prevent token overflow
 
     model_config = SettingsConfigDict(
         env_file=".env",

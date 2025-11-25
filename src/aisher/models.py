@@ -20,7 +20,7 @@ class ErrorLog(BaseModel):
     stacktrace: str = Field("", description="Exception stacktrace (may be truncated)")
 
     # 3. HTTP 및 DB 문맥 정보
-    http_status: Optional[str] = Field(None, description="HTTP response status code")
+    http_status: Optional[int] = Field(None, description="HTTP response status code")
     http_method: Optional[str] = Field(None, description="HTTP method (GET, POST, etc.)")
     http_url: Optional[str] = Field(None, description="HTTP URL")
     db_system: Optional[str] = Field(None, description="Database system (mysql, postgresql, etc.)")
@@ -44,7 +44,7 @@ class ErrorLog(BaseModel):
                 "error_type": "NullPointerException",
                 "error_message": "Cannot invoke method on null object",
                 "stacktrace": "java.lang.NullPointerException...",
-                "http_status": "500",
+                "http_status": 500,
                 "http_method": "GET",
                 "http_url": "/api/users/123",
                 "db_system": None,
@@ -55,7 +55,3 @@ class ErrorLog(BaseModel):
             }
         }
     )
-
-
-# Backwards compatibility alias for existing code
-ErrorLogLegacy = ErrorLog
