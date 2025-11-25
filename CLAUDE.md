@@ -12,54 +12,73 @@ The key innovation is **TOON format** which reduces LLM token usage by 40-60% co
 ## Quick Commands
 
 ```bash
-# Setup
-./setup.sh                           # One-time setup with virtual environment
+# Setup (one-time)
+uv sync                              # Install dependencies and create virtual environment
+uv sync --dev                        # Install with dev dependencies (testing, linting)
 
 # Run application
-python error_analyzer.py             # Execute main analysis pipeline
+uv run python -m aisher.main         # Execute main analysis pipeline
 
 # Run tests
-pytest test_error_analyzer.py -v     # All tests with verbose output
-pytest test_error_analyzer.py --cov=error_analyzer --cov-report=term-missing  # With coverage
+uv run pytest -v                     # All tests with verbose output
+uv run pytest --cov=aisher --cov-report=term-missing  # With coverage
 
 # Lint/Format
-black error_analyzer.py              # Format code
-ruff check error_analyzer.py         # Lint check
+uv run black src/ tests/             # Format code
+uv run ruff check src/ tests/        # Lint check
+
+# Dependency management
+uv add <package>                     # Add new dependency
+uv add --dev <package>               # Add dev dependency
+uv lock                              # Update lock file
 ```
 
 ## Project Architecture
 
 ```
 Aisher/
-├── error_analyzer.py      # Main application (all core logic)
-├── test_error_analyzer.py # Pytest test suite
-├── requirements.txt       # Python dependencies
-├── setup.sh              # Quick setup script
+├── src/aisher/            # Main application package
+│   ├── __init__.py       # Package initialization
+│   ├── config.py         # Settings and logging configuration
+│   ├── models.py         # Data models (ErrorLog)
+│   ├── toon_formatter.py # TOON format encoder
+│   ├── repository.py     # SigNoz/ClickHouse repository
+│   ├── analyzer.py       # LLM batch analyzer
+│   └── main.py           # Main execution pipeline
+├── tests/                 # Test suite
+│   └── test_error_analyzer.py
+├── pyproject.toml        # uv package configuration
+├── uv.lock               # Locked dependencies (auto-generated)
+├── requirements.txt      # Legacy pip requirements (kept for compatibility)
+├── setup.sh              # Legacy setup script
 ├── .env.example          # Configuration template
 ├── README.md             # Full documentation
 ├── CODE_REVIEW.md        # Bug fixes & improvements history
 └── QUICK_START.md        # Quick reference guide
 ```
 
-### Core Components (in error_analyzer.py)
+### Core Components
 
-| Component | Lines | Description |
-|-----------|-------|-------------|
-| `Settings` | 23-56 | Pydantic v2 configuration with SecretStr for secrets |
-| `ErrorLog` | 59-78 | Data model for error logs (TOON-optimized fields) |
-| `ToonFormatter` | 81-155 | TOON format encoder with smart escaping |
-| `SigNozRepository` | 158-276 | Async ClickHouse client with connection pooling |
-| `BatchAnalyzer` | 278-374 | LLM integration with retry logic |
-| `main()` | 377-418 | Orchestrator with resource management |
+| Module | Component | Description |
+|--------|-----------|-------------|
+| `config.py` | `Settings` | Pydantic v2 configuration with SecretStr for secrets |
+| `config.py` | `logger` | Structured logging with colored console output |
+| `models.py` | `ErrorLog` | Data model for error logs (TOON-optimized fields) |
+| `toon_formatter.py` | `ToonFormatter` | TOON format encoder with smart escaping |
+| `repository.py` | `SigNozRepository` | Async ClickHouse client with connection pooling |
+| `analyzer.py` | `BatchAnalyzer` | LLM integration with retry logic |
+| `main.py` | `main()` | Orchestrator with resource management |
 
 ## Code Conventions
 
 ### Python Style
 - **Python version**: 3.10+
+- **Package manager**: uv (fast, modern Python package installer)
+- **Package structure**: `src/aisher/` layout (PEP 420)
 - **Type hints**: Required on all public functions
 - **Async/await**: Used for I/O operations (ClickHouse, LLM)
-- **Formatter**: Black (line length 88)
-- **Linter**: Ruff
+- **Formatter**: Black (line length 100)
+- **Linter**: Ruff (line length 100)
 
 ### Pydantic Conventions
 - Use Pydantic v2 (`BaseModel`, `BaseSettings`)
@@ -165,7 +184,7 @@ This is the main traces table queried by `SigNozRepository.fetch_errors()`.
 | `numberTagMap` | Map(String, Float64) | Numeric attributes |
 | `boolTagMap` | Map(String, Bool) | Boolean attributes |
 
-**Current Query Pattern (error_analyzer.py:202-217):**
+**Current Query Pattern (src/aisher/repository.py):**
 ```sql
 SELECT
     any(traceID) as id,
@@ -279,13 +298,16 @@ WHERE ts.metric_name = 'http_server_duration_bucket'
 ### Running Specific Tests
 ```bash
 # Single test class
-pytest test_error_analyzer.py::TestToonFormatter -v
+uv run pytest tests/test_error_analyzer.py::TestToonFormatter -v
 
 # Single test method
-pytest test_error_analyzer.py::TestToonFormatter::test_format_tabular_basic -v
+uv run pytest tests/test_error_analyzer.py::TestToonFormatter::test_format_tabular_basic -v
 
 # Skip LLM tests (no API key)
-pytest test_error_analyzer.py -v -k "not analyze_batch"
+uv run pytest -v -k "not analyze_batch"
+
+# Run all tests with coverage
+uv run pytest --cov=aisher --cov-report=html
 ```
 
 ### Mock Patterns
@@ -302,21 +324,34 @@ async def test_with_mock(monkeypatch):
 ## Common Tasks
 
 ### Adding a New Field to ErrorLog
-1. Add field to `ErrorLog` model with `Field(...)` descriptor
-2. Update SQL query in `SigNozRepository.fetch_errors()`
+1. Add field to `ErrorLog` model in `src/aisher/models.py` with `Field(...)` descriptor
+2. Update SQL query in `src/aisher/repository.py` (`SigNozRepository.fetch_errors()`)
 3. Update column unpacking in fetch result handler
-4. Add test case in `TestToonFormatter`
+4. Add test case in `tests/test_error_analyzer.py` (`TestToonFormatter`)
+5. Run tests: `uv run pytest -v`
 
 ### Changing LLM Provider
 1. Update `LLM_MODEL` in `.env` (litellm supports 100+ providers)
 2. Set appropriate API key env var
-3. Test with: `pytest test_error_analyzer.py::TestBatchAnalyzer -v`
+3. Test with: `uv run pytest tests/test_error_analyzer.py::TestBatchAnalyzer -v`
 
 ### Modifying ClickHouse Query
-1. Update query in `SigNozRepository.fetch_errors()`
+1. Update query in `src/aisher/repository.py` (`SigNozRepository.fetch_errors()`)
 2. Ensure parameterized queries (no f-string interpolation for user inputs)
 3. Update column mapping in result handler
-4. Test connection: `python -c "from error_analyzer import ..."`
+4. Test connection: `uv run python -c "from aisher.repository import SigNozRepository; import asyncio; asyncio.run(SigNozRepository().fetch_errors(limit=1))"`
+
+### Adding a New Dependency
+```bash
+# Production dependency
+uv add <package-name>
+
+# Development dependency
+uv add --dev <package-name>
+
+# Update lock file after manual pyproject.toml edits
+uv lock
+```
 
 ## Security Considerations
 
@@ -328,21 +363,33 @@ async def test_with_mock(monkeypatch):
 
 ## Dependencies
 
-Core:
-- `clickhouse-connect==0.7.0` - Async ClickHouse client
-- `litellm==1.30.0` - Universal LLM API (supports OpenAI, Anthropic, Ollama, etc.)
-- `pydantic==2.6.0` - Data validation
-- `pydantic-settings==2.1.0` - Settings management
+Dependencies are managed via `uv` and defined in `pyproject.toml`.
 
-Dev:
-- `pytest==7.4.0` - Testing framework
-- `pytest-asyncio==0.21.0` - Async test support
-- `black==23.12.0` - Code formatter
-- `ruff==0.1.0` - Linter
+**Core dependencies** (production):
+- `clickhouse-connect` - Async ClickHouse client
+- `litellm` - Universal LLM API (supports OpenAI, Anthropic, Ollama, etc.)
+- `pydantic` - Data validation
+- `pydantic-settings` - Settings management
+- `aiohttp` - Async HTTP client
+- `httpx` - Modern HTTP client
+- `prometheus-client` - Metrics collection
+
+**Dev dependencies** (optional):
+- `pytest` - Testing framework
+- `pytest-asyncio` - Async test support
+- `pytest-cov` - Code coverage
+- `black` - Code formatter
+- `ruff` - Linter
+
+Install all dependencies:
+```bash
+uv sync --dev  # Install all dependencies including dev tools
+uv sync        # Install production dependencies only
+```
 
 ## Known Limitations
 
-1. **Single-file architecture**: All code in `error_analyzer.py` - may need refactoring for larger features
+1. **Modular architecture**: Code is split into modules in `src/aisher/` - well-organized but still a small project
 2. **No connection pooling**: Single client per repository instance
 3. **No caching**: Each analysis makes fresh LLM call
 4. **SigNoz-specific**: Query assumes SigNoz schema (`signoz_index_v2` table)
@@ -357,9 +404,9 @@ logging.basicConfig(level=logging.DEBUG)
 
 ### Test ClickHouse Connection
 ```bash
-python -c "
+uv run python -c "
 import asyncio
-from error_analyzer import SigNozRepository
+from aisher.repository import SigNozRepository
 async def test():
     repo = SigNozRepository()
     errors = await repo.fetch_errors(limit=1)
@@ -370,20 +417,66 @@ asyncio.run(test())
 ```
 
 ### Inspect TOON Output
-```python
-from error_analyzer import ToonFormatter, ErrorLog
+```bash
+uv run python -c "
+from aisher.toon_formatter import ToonFormatter
+from aisher.models import ErrorLog
 errors = [ErrorLog(id='1', svc='test', op='op', msg='error', cnt=1, stack='stack')]
 print(ToonFormatter.format_tabular(errors, 'test'))
+"
+```
+
+### Run the Application
+```bash
+# With uv (recommended)
+uv run python -m aisher.main
+
+# Or activate virtual environment first
+source .venv/bin/activate  # Linux/Mac
+python -m aisher.main
 ```
 
 ## Git Workflow
 
 - Main development branch: feature branches off main
 - Commit message format: `type: description` (e.g., `feat: add prometheus metrics`)
-- Run tests before committing: `pytest test_error_analyzer.py -v`
+- Run tests before committing: `uv run pytest -v`
+- Format code before committing: `uv run black src/ tests/ && uv run ruff check src/ tests/`
+
+## uv Package Manager
+
+This project uses [uv](https://github.com/astral-sh/uv) - an extremely fast Python package installer and resolver written in Rust.
+
+### Key Benefits
+- **Speed**: 10-100x faster than pip
+- **Reliability**: Deterministic dependency resolution with `uv.lock`
+- **Compatibility**: Drop-in replacement for pip and pip-tools
+- **Modern**: Built-in virtual environment management
+
+### Virtual Environment Location
+uv creates virtual environments in `.venv/` by default (gitignored). The environment is automatically created on first `uv sync`.
+
+### Common uv Commands
+```bash
+uv sync              # Install/sync dependencies from pyproject.toml
+uv add <package>     # Add dependency to pyproject.toml and install
+uv remove <package>  # Remove dependency
+uv pip list          # List installed packages
+uv pip show <pkg>    # Show package details
+uv run <command>     # Run command in virtual environment
+uv lock              # Update uv.lock file
+```
+
+### Migration from pip/venv
+If you're used to traditional Python workflows:
+- `python -m venv .venv` → automatic with `uv sync`
+- `pip install -r requirements.txt` → `uv sync`
+- `pip install <package>` → `uv add <package>`
+- `source .venv/bin/activate && python` → `uv run python`
 
 ## External Resources
 
+- [uv Documentation](https://github.com/astral-sh/uv)
 - [TOON Format Spec](https://github.com/toon-format/spec)
 - [SigNoz Documentation](https://signoz.io/docs/)
 - [LiteLLM Providers](https://docs.litellm.ai/docs/providers)
