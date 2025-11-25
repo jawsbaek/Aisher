@@ -1,7 +1,7 @@
 import asyncio
 from typing import List, Optional
 import clickhouse_connect
-from clickhouse_connect.driver.client import AsyncClient
+from clickhouse_connect.driver.asyncclient import AsyncClient
 from clickhouse_connect.driver.exceptions import DatabaseError
 
 from .config import settings, logger

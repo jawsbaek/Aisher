@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ErrorLog(BaseModel):
@@ -10,8 +10,8 @@ class ErrorLog(BaseModel):
     cnt: int = Field(..., description="Occurrence count")
     stack: str = Field(..., description="Stack trace (truncated)")
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "id": "abc123",
                 "svc": "api-gateway",
@@ -21,3 +21,4 @@ class ErrorLog(BaseModel):
                 "stack": "java.lang.NullPointerException..."
             }
         }
+    )
