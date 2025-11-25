@@ -16,14 +16,22 @@ parts/
 sdist/
 var/
 wheels/
+share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+MANIFEST
 
-# Virtual Environment
+# Virtual environments
+.venv/
 venv/
 ENV/
 env/
+.virtualenv/
+
+# UV package manager
+.uv/
+uv.lock
 
 # IDE
 .vscode/
@@ -32,7 +40,7 @@ env/
 *.swo
 *~
 
-# Environment
+# Environment variables
 .env
 .env.local
 
@@ -40,7 +48,13 @@ env/
 .pytest_cache/
 .coverage
 htmlcov/
+.tox/
+.nox/
+coverage.xml
 *.cover
+
+# Logs
+*.log
 
 # OS
 .DS_Store

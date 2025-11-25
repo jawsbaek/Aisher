@@ -4,8 +4,8 @@ import clickhouse_connect
 from clickhouse_connect.driver.client import AsyncClient
 from clickhouse_connect.driver.exceptions import DatabaseError
 
-from config import settings, logger
-from models import ErrorLog
+from .config import settings, logger
+from .models import ErrorLog
 
 
 class SigNozRepository:
