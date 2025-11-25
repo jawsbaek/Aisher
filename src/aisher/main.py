@@ -1,10 +1,11 @@
 import asyncio
 import json
+import os
 from datetime import datetime
 
-from config import logger
-from repository import SigNozRepository
-from analyzer import BatchAnalyzer
+from .config import logger
+from .repository import SigNozRepository
+from .analyzer import BatchAnalyzer
 
 
 async def main():
@@ -35,9 +36,11 @@ async def main():
 
         # Optional: Save to file
         output_file = f"analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        with open(f"/home/claude/{output_file}", "w") as f:
+        output_dir = os.environ.get("AISHER_OUTPUT_DIR", ".")
+        output_path = os.path.join(output_dir, output_file)
+        with open(output_path, "w") as f:
             json.dump(result, f, indent=2, ensure_ascii=False)
-        logger.info(f"💾 Report saved to {output_file}")
+        logger.info(f"💾 Report saved to {output_path}")
 
     except KeyboardInterrupt:
         logger.info("⚠️  Process interrupted by user")

@@ -1,5 +1,5 @@
 import logging
-from pydantic import BaseModel, Field, SecretStr, validator
+from pydantic import BaseModel, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Configure logging
@@ -37,8 +37,9 @@ class Settings(BaseSettings):
         extra='ignore'
     )
 
-    @validator('OPENAI_API_KEY')
-    def validate_api_key(cls, v):
+    @field_validator('OPENAI_API_KEY')
+    @classmethod
+    def validate_api_key(cls, v: SecretStr) -> SecretStr:
         if v.get_secret_value().startswith('sk-...'):
             logger.warning("⚠️  Using placeholder API key. Set OPENAI_API_KEY in .env")
         return v
