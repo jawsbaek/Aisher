@@ -119,6 +119,154 @@ MAX_RETRIES=3
 STACK_MAX_LENGTH=600
 ```
 
+## SigNoz ClickHouse Database Schema
+
+This project queries the SigNoz ClickHouse backend. Understanding the schema is essential for writing custom queries.
+
+### Database Overview
+
+SigNoz uses three main databases:
+
+| Database | Purpose | Primary Tables |
+|----------|---------|----------------|
+| `signoz_traces` | Distributed tracing data | `signoz_index_v2`, `signoz_spans`, `signoz_error_index_v2` |
+| `signoz_logs` | Log aggregation | `logs_v2` |
+| `signoz_metrics` | Metrics storage | `samples_v4`, `time_series_v4` |
+
+> **Note**: For distributed deployments, use `distributed_` prefix (e.g., `distributed_signoz_index_v2`)
+
+### signoz_traces.signoz_index_v2 (Used by this project)
+
+This is the main traces table queried by `SigNozRepository.fetch_errors()`.
+
+**Core Columns:**
+| Column | Type | Description |
+|--------|------|-------------|
+| `timestamp` | DateTime64(9) | Span timestamp (nanoseconds) |
+| `traceID` | FixedString(32) | Unique trace identifier |
+| `spanID` | String | Unique span identifier |
+| `parentSpanID` | String | Parent span ID (empty for root) |
+| `serviceName` | LowCardinality(String) | Service name (e.g., `api-gateway`) |
+| `name` | LowCardinality(String) | Operation/span name |
+| `kind` | Int8 | Span kind (0=Unspecified, 1=Internal, 2=Server, 3=Client, 4=Producer, 5=Consumer) |
+| `durationNano` | UInt64 | Span duration in nanoseconds |
+| `statusCode` | Int16 | Status (0=Unset, 1=Ok, **2=Error**) |
+| `externalHttpMethod` | LowCardinality(String) | HTTP method |
+| `externalHttpUrl` | LowCardinality(String) | HTTP URL |
+| `dbSystem` | LowCardinality(String) | Database system (mysql, postgresql, etc.) |
+| `dbName` | LowCardinality(String) | Database name |
+| `rpcMethod` | LowCardinality(String) | RPC method (replaces deprecated `gRPCMethod`) |
+| `responseStatusCode` | String | HTTP/gRPC response code |
+
+**Tag Map Columns (for custom attributes):**
+| Column | Type | Usage |
+|--------|------|-------|
+| `stringTagMap` | Map(String, String) | String attributes (e.g., `exception.message`) |
+| `numberTagMap` | Map(String, Float64) | Numeric attributes |
+| `boolTagMap` | Map(String, Bool) | Boolean attributes |
+
+**Current Query Pattern (error_analyzer.py:202-217):**
+```sql
+SELECT
+    any(traceID) as id,
+    any(serviceName) as svc,
+    any(name) as op,
+    stringTagMap['exception.message'] as msg,
+    count(*) as cnt,
+    any(stringTagMap['exception.stacktrace']) as raw_stack
+FROM signoz_traces.signoz_index_v2
+WHERE statusCode = 2                              -- Error status
+  AND timestamp > now() - INTERVAL ? MINUTE
+  AND stringTagMap['exception.message'] != ''
+GROUP BY stringTagMap['exception.message']
+ORDER BY cnt DESC
+LIMIT ?
+```
+
+**Common Exception Attributes in stringTagMap:**
+- `exception.message` - Error message text
+- `exception.stacktrace` - Full stack trace
+- `exception.type` - Exception class name
+
+### signoz_logs.logs_v2
+
+**Core Columns:**
+| Column | Type | Description |
+|--------|------|-------------|
+| `timestamp` | UInt64 | Log timestamp (nanoseconds) |
+| `observed_timestamp` | UInt64 | When log was observed |
+| `id` | String | Unique log ID |
+| `trace_id` | String | Associated trace ID |
+| `span_id` | String | Associated span ID |
+| `severity_text` | LowCardinality(String) | Log level (INFO, WARN, ERROR, etc.) |
+| `severity_number` | UInt8 | Numeric severity (1-24) |
+| `body` | String | Log message content |
+| `attributes_string` | Map(String, String) | String log attributes |
+| `attributes_number` | Map(String, Float64) | Numeric log attributes |
+| `attributes_bool` | Map(String, Bool) | Boolean log attributes |
+| `resources_string` | Map(String, String) | Resource attributes |
+| `scope_name` | String | Instrumentation scope |
+
+**Example Query:**
+```sql
+SELECT timestamp, severity_text, body, attributes_string
+FROM signoz_logs.logs_v2
+WHERE severity_text IN ('ERROR', 'FATAL')
+  AND timestamp > now() - INTERVAL 1 HOUR
+ORDER BY timestamp DESC
+LIMIT 100
+```
+
+### signoz_metrics.samples_v4
+
+**Columns:**
+| Column | Type | Description |
+|--------|------|-------------|
+| `env` | LowCardinality(String) | Environment (default: 'default') |
+| `temporality` | LowCardinality(String) | 'Unspecified' (gauge) or 'Cumulative' (counter) |
+| `metric_name` | LowCardinality(String) | Metric name |
+| `fingerprint` | UInt64 | Unique label set identifier |
+| `unix_milli` | Int64 | Timestamp in milliseconds |
+| `value` | Float64 | Metric value |
+
+**Related Tables:**
+- `time_series_v4` - Label sets (1 hour granularity)
+- `time_series_v4_6hrs` - Label sets (6 hour granularity)
+- `time_series_v4_1day` - Label sets (1 day granularity)
+
+**Example Query (join pattern):**
+```sql
+SELECT ts.metric_name, samples.unix_milli, samples.value
+FROM signoz_metrics.distributed_time_series_v4 ts
+JOIN signoz_metrics.distributed_samples_v4 samples
+  ON ts.fingerprint = samples.fingerprint
+WHERE ts.metric_name = 'http_server_duration_bucket'
+  AND samples.unix_milli > toUnixTimestamp(now() - INTERVAL 1 HOUR) * 1000
+```
+
+### Schema Version Notes
+
+| Version | Changes |
+|---------|---------|
+| v2 → v3 | Added `ts_bucket_start` for faster timestamp filtering |
+| tagMap split | `tagMap` → `stringTagMap`, `numberTagMap`, `boolTagMap` |
+| HTTP/gRPC | `gRPCMethod` → `rpcMethod`, `httpCode`+`gRPCCode` → `responseStatusCode` |
+
+### Query Performance Tips
+
+1. **Use distributed tables** for multi-shard deployments: `distributed_signoz_index_v2`
+2. **Filter early** with `WHERE` clauses on indexed columns (`timestamp`, `serviceName`, `statusCode`)
+3. **Use `ts_bucket_start`** in v3 schema for timestamp range queries
+4. **Avoid full table scans** on Map columns when possible
+5. **Parameterize queries** to prevent SQL injection (see `SigNozRepository.fetch_errors()`)
+
+### References
+
+- [SigNoz Traces Query Guide](https://signoz.io/docs/userguide/writing-clickhouse-traces-query/)
+- [SigNoz Logs Query Guide](https://signoz.io/docs/userguide/logs_clickhouse_queries/)
+- [SigNoz Metrics Query Guide](https://signoz.io/docs/userguide/write-a-metrics-clickhouse-query/)
+- [ClickHouse Schema Discussion](https://github.com/SigNoz/signoz/issues/3899)
+
 ## Testing Guidelines
 
 ### Test Structure
