@@ -29,7 +29,7 @@ ENV/
 env/
 .virtualenv/
 
-# UV
+# UV package manager
 .uv/
 uv.lock
 
@@ -39,7 +39,10 @@ uv.lock
 *.swp
 *.swo
 *~
-.DS_Store
+
+# Environment variables
+.env
+.env.local
 
 # Testing
 .pytest_cache/
@@ -50,14 +53,9 @@ htmlcov/
 coverage.xml
 *.cover
 
-# Environment variables
-.env
-.env.local
-
 # Logs
 *.log
 
-# Distribution / packaging
-*.egg-info/
-dist/
-build/
+# OS
+.DS_Store
+Thumbs.db
