@@ -5,7 +5,7 @@ description = "ClickHouse log analyzer with LLM-powered insights"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "clickhouse-connect==0.7.0",
+    "clickhouse-connect>=0.8.0",
     "litellm==1.30.0",
     "pydantic==2.6.0",
     "pydantic-settings==2.1.0",
@@ -41,3 +41,9 @@ target-version = "py310"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+
+[dependency-groups]
+dev = [
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+]
