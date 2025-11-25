@@ -79,7 +79,7 @@ def test_settings():
 @pytest.fixture
 async def test_repository(test_settings, docker_services):
     """Create a repository instance connected to test ClickHouse"""
-    repo = SigNozRepository()
+    repo = SigNozRepository(custom_settings=test_settings)
     yield repo
     await repo.close()
 

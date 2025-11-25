@@ -4,20 +4,24 @@ import clickhouse_connect
 from clickhouse_connect.driver.asyncclient import AsyncClient
 from clickhouse_connect.driver.exceptions import DatabaseError
 
-from .config import settings, logger
+from .config import settings, logger, Settings
 from .models import ErrorLog
 
 
 class SigNozRepository:
     """Async repository for SigNoz/ClickHouse integration"""
 
-    def __init__(self):
-        self.host = settings.CLICKHOUSE_HOST
-        self.port = settings.CLICKHOUSE_PORT
-        self.user = settings.CLICKHOUSE_USER
-        self.password = settings.CLICKHOUSE_PASSWORD.get_secret_value()
-        self._validate_database_name(settings.CLICKHOUSE_DATABASE)
-        self.database = settings.CLICKHOUSE_DATABASE
+    def __init__(self, custom_settings: Optional[Settings] = None):
+        # Use provided settings or fall back to global settings
+        config = custom_settings or settings
+
+        self.host = config.CLICKHOUSE_HOST
+        self.port = config.CLICKHOUSE_PORT
+        self.user = config.CLICKHOUSE_USER
+        self.password = config.CLICKHOUSE_PASSWORD.get_secret_value()
+        self._validate_database_name(config.CLICKHOUSE_DATABASE)
+        self.database = config.CLICKHOUSE_DATABASE
+        self._settings = config
         self._client: Optional[AsyncClient] = None
 
     def _validate_database_name(self, name: str) -> None:
@@ -36,7 +40,7 @@ class SigNozRepository:
                     port=self.port,
                     username=self.user,
                     password=self.password,
-                    connect_timeout=settings.QUERY_TIMEOUT
+                    connect_timeout=self._settings.QUERY_TIMEOUT
                 )
                 logger.info(f"✅ Connected to ClickHouse at {self.host}:{self.port}")
             except Exception as e:
@@ -70,22 +74,22 @@ class SigNozRepository:
 
         # Retry logic with exponential backoff
         last_exception = None
-        for attempt in range(settings.MAX_RETRIES):
+        for attempt in range(self._settings.MAX_RETRIES):
             try:
                 return await self._fetch_errors_internal(limit, time_window_minutes)
             except (DatabaseError, asyncio.TimeoutError) as e:
                 last_exception = e
-                if attempt < settings.MAX_RETRIES - 1:
+                if attempt < self._settings.MAX_RETRIES - 1:
                     wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
                     logger.warning(
-                        f"Query failed (attempt {attempt + 1}/{settings.MAX_RETRIES}), "
+                        f"Query failed (attempt {attempt + 1}/{self._settings.MAX_RETRIES}), "
                         f"retrying in {wait_time}s...",
                         extra={"error_type": type(e).__name__, "attempt": attempt + 1}
                     )
                     await asyncio.sleep(wait_time)
                 else:
                     logger.error(
-                        f"Query failed after {settings.MAX_RETRIES} attempts",
+                        f"Query failed after {self._settings.MAX_RETRIES} attempts",
                         extra={"error_type": type(e).__name__},
                         exc_info=True
                     )
@@ -130,7 +134,7 @@ class SigNozRepository:
                     'time_window': time_window_minutes
                 }
             ),
-            timeout=settings.QUERY_TIMEOUT
+            timeout=self._settings.QUERY_TIMEOUT
         )
 
         logs = []
@@ -139,11 +143,11 @@ class SigNozRepository:
             trace_id, service, operation, message, count, full_stack = row
 
             # Smart Truncation: Preserve error context
-            if full_stack and len(full_stack) > settings.STACK_MAX_LENGTH:
+            if full_stack and len(full_stack) > self._settings.STACK_MAX_LENGTH:
                 stack_display = (
-                    full_stack[:settings.STACK_HEAD_LENGTH] +
+                    full_stack[:self._settings.STACK_HEAD_LENGTH] +
                     "\n...[truncated]...\n" +
-                    full_stack[-settings.STACK_TAIL_LENGTH:]
+                    full_stack[-self._settings.STACK_TAIL_LENGTH:]
                 )
             else:
                 stack_display = full_stack or ""
