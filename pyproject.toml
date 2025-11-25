@@ -41,3 +41,8 @@ target-version = "py310"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+
+[dependency-groups]
+dev = [
+    "python-dotenv>=1.2.1",
+]
