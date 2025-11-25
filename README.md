@@ -166,15 +166,99 @@ value3,value4,...
 
 ## 🧪 Testing
 
+### Unit Tests (No Dependencies)
+
 ```bash
-# Run all tests
-pytest test_error_analyzer.py -v
+# Run unit tests only (default)
+make test
+# or
+uv run pytest tests/test_error_analyzer.py -v
 
 # Run with coverage
-pytest test_error_analyzer.py --cov=error_analyzer --cov-report=html
+make test-cov
+# or
+uv run pytest tests/ -v --cov=aisher --cov-report=html
+```
 
-# Run specific test class
-pytest test_error_analyzer.py::TestToonFormatter -v
+### Integration Tests (Docker Required)
+
+Integration tests use a real ClickHouse container with test data to verify the entire pipeline.
+
+**Quick start:**
+```bash
+# Run integration tests (handles Docker lifecycle automatically)
+make test-integration
+
+# Or manually control Docker:
+make docker-up              # Start ClickHouse container
+make test-integration       # Run integration tests
+make docker-down            # Stop and cleanup
+```
+
+**Alternative (script-based):**
+```bash
+# All-in-one: start containers, run tests, cleanup
+./scripts/run_integration_tests.sh
+
+# Keep containers running for debugging
+KEEP_CONTAINERS=1 ./scripts/run_integration_tests.sh
+```
+
+**Manual workflow:**
+```bash
+# 1. Start Docker services
+docker-compose -f docker-compose.test.yml up -d
+
+# 2. Wait for ClickHouse to be ready (check health)
+docker-compose -f docker-compose.test.yml ps
+
+# 3. Run integration tests
+uv run pytest tests/test_integration_docker.py -v --integration
+
+# 4. Debug with ClickHouse shell
+make docker-shell
+# Or: docker-compose -f docker-compose.test.yml exec clickhouse clickhouse-client --database signoz_traces
+
+# 5. Cleanup
+docker-compose -f docker-compose.test.yml down -v
+```
+
+**What integration tests verify:**
+- ✅ Real ClickHouse connection and query execution
+- ✅ SigNoz schema compatibility (`signoz_index_v2` table)
+- ✅ Error grouping and sorting logic
+- ✅ TOON formatting with real data
+- ✅ Time window filtering
+- ✅ Concurrent query handling
+- ✅ Performance benchmarks
+
+**Test data:**
+The integration tests use pre-loaded test data including:
+- NullPointerException (2 occurrences, grouped)
+- Database connection timeout
+- Redis connection refused
+- HTTP 503 from external API
+
+### Run All Tests
+
+```bash
+# Run both unit and integration tests
+make test-all
+```
+
+### Makefile Commands
+
+```bash
+make help               # Show all available commands
+make test               # Unit tests only
+make test-integration   # Integration tests with Docker
+make test-all          # All tests
+make test-cov          # Tests with coverage report
+make docker-up         # Start Docker containers
+make docker-down       # Stop Docker containers
+make docker-logs       # Show container logs
+make docker-shell      # Open ClickHouse shell
+make clean             # Remove test artifacts
 ```
 
 ## 📊 Performance Benchmarks

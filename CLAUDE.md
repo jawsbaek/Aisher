@@ -20,8 +20,18 @@ uv sync --dev                        # Install with dev dependencies (testing, l
 uv run python -m aisher.main         # Execute main analysis pipeline
 
 # Run tests
-uv run pytest -v                     # All tests with verbose output
-uv run pytest --cov=aisher --cov-report=term-missing  # With coverage
+make test                            # Unit tests only (fast, no dependencies)
+make test-integration                # Integration tests with Docker
+make test-all                        # All tests (unit + integration)
+make test-cov                        # Tests with coverage report
+uv run pytest -v                     # Manual: All tests with verbose output
+uv run pytest --integration -v       # Manual: Integration tests only
+
+# Docker management
+make docker-up                       # Start ClickHouse test container
+make docker-down                     # Stop and remove containers
+make docker-shell                    # Open ClickHouse SQL shell
+make docker-logs                     # Show container logs
 
 # Lint/Format
 uv run black src/ tests/             # Format code
@@ -46,7 +56,15 @@ Aisher/
 │   ├── analyzer.py       # LLM batch analyzer
 │   └── main.py           # Main execution pipeline
 ├── tests/                 # Test suite
-│   └── test_error_analyzer.py
+│   ├── test_error_analyzer.py        # Unit tests
+│   ├── test_integration_docker.py    # Docker-based integration tests
+│   ├── conftest.py                   # Pytest configuration
+│   └── docker/
+│       └── clickhouse/
+│           └── init.sql              # Test database initialization
+├── scripts/
+│   └── run_integration_tests.sh      # Integration test runner
+├── docker-compose.test.yml           # Docker test environment
 ├── pyproject.toml        # uv package configuration
 ├── uv.lock               # Locked dependencies (auto-generated)
 ├── requirements.txt      # Legacy pip requirements (kept for compatibility)
@@ -289,28 +307,112 @@ WHERE ts.metric_name = 'http_server_duration_bucket'
 ## Testing Guidelines
 
 ### Test Structure
-- `TestToonFormatter`: Unit tests for TOON format generation
-- `TestSigNozRepository`: Repository layer tests (requires ClickHouse or mocks)
+
+**Unit Tests** (`tests/test_error_analyzer.py`):
+- `TestToonFormatter`: TOON format generation (no dependencies)
+- `TestSigNozRepository`: Repository layer tests with mocks
 - `TestBatchAnalyzer`: LLM integration tests (skipped by default)
 - `TestIntegration`: End-to-end tests with mocks
 - `TestPerformance`: Performance benchmarks
 
-### Running Specific Tests
+**Integration Tests** (`tests/test_integration_docker.py`):
+- `TestDockerClickHouseConnection`: ClickHouse connectivity
+- `TestDockerErrorFetching`: Real data fetching and grouping
+- `TestDockerToonFormatting`: TOON formatting with real data
+- `TestDockerEndToEnd`: Complete pipeline tests
+- `TestDockerErrorScenarios`: Edge case handling
+- `TestDockerPerformance`: Performance with real database
+
+### Running Tests
+
+**Quick Commands:**
 ```bash
-# Single test class
+# Unit tests only (fast, no dependencies)
+make test
+
+# Integration tests (requires Docker)
+make test-integration
+
+# All tests (unit + integration)
+make test-all
+
+# Tests with coverage
+make test-cov
+```
+
+**Manual Commands:**
+```bash
+# Unit tests
+uv run pytest tests/test_error_analyzer.py -v
+
+# Integration tests (skip by default without --integration flag)
+uv run pytest tests/test_integration_docker.py -v --integration
+
+# Run specific test class
 uv run pytest tests/test_error_analyzer.py::TestToonFormatter -v
 
-# Single test method
+# Run specific test method
 uv run pytest tests/test_error_analyzer.py::TestToonFormatter::test_format_tabular_basic -v
 
 # Skip LLM tests (no API key)
 uv run pytest -v -k "not analyze_batch"
 
 # Run all tests with coverage
-uv run pytest --cov=aisher --cov-report=html
+uv run pytest tests/ -v --cov=aisher --cov-report=html
+```
+
+### Integration Test Setup
+
+**Prerequisites:**
+- Docker and docker-compose installed
+- Port 8123 available for ClickHouse
+
+**Setup Docker environment:**
+```bash
+# Start ClickHouse container (auto-loads test data)
+make docker-up
+# or
+docker-compose -f docker-compose.test.yml up -d
+
+# Wait for container to be healthy (5-10 seconds)
+docker-compose -f docker-compose.test.yml ps
+
+# Run integration tests
+make test-integration
+# or
+uv run pytest tests/test_integration_docker.py -v --integration
+
+# Debug with ClickHouse shell
+make docker-shell
+# or
+docker-compose -f docker-compose.test.yml exec clickhouse clickhouse-client --database signoz_traces
+
+# Cleanup
+make docker-down
+# or
+docker-compose -f docker-compose.test.yml down -v
+```
+
+**Test Data:**
+The `tests/docker/clickhouse/init.sql` script pre-loads test errors:
+- 2x NullPointerException (grouped as 1 error with count=2)
+- 1x MySQL connection timeout (30s)
+- 1x Redis connection refused
+- 1x HTTP 503 from external API
+- 1x Success span (statusCode=1, excluded from results)
+
+**Automated Test Runner:**
+```bash
+# All-in-one: start containers, run tests, cleanup
+./scripts/run_integration_tests.sh
+
+# Keep containers running for debugging
+KEEP_CONTAINERS=1 ./scripts/run_integration_tests.sh
 ```
 
 ### Mock Patterns
+
+**Mocking repository:**
 ```python
 @pytest.mark.asyncio
 async def test_with_mock(monkeypatch):
@@ -319,6 +421,16 @@ async def test_with_mock(monkeypatch):
 
     repo = SigNozRepository()
     monkeypatch.setattr(repo, "fetch_errors", mock_fetch)
+```
+
+**Using test fixtures:**
+```python
+@pytest.fixture
+async def test_repository(docker_services):
+    """Real repository connected to test ClickHouse"""
+    repo = SigNozRepository()
+    yield repo
+    await repo.close()
 ```
 
 ## Common Tasks
@@ -378,6 +490,7 @@ Dependencies are managed via `uv` and defined in `pyproject.toml`.
 - `pytest` - Testing framework
 - `pytest-asyncio` - Async test support
 - `pytest-cov` - Code coverage
+- `python-dotenv` - Environment variable loading for tests
 - `black` - Code formatter
 - `ruff` - Linter
 
