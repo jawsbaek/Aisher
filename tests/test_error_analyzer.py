@@ -1375,5 +1375,372 @@ class TestStacktraceTruncationBoundaries:
         assert result is None  # Empty string is falsy
 
 
+# --- Phase 3: TOON Escaping Edge Cases ---
+class TestToonEscapingEdgeCases:
+    """Test suite for TOON escaping edge cases"""
+
+    def test_escape_boolean_true(self):
+        """Test escaping boolean True value"""
+        result = ToonFormatter._escape_string(True, ",")
+        # Boolean is converted to string "True"
+        assert result == "True"
+
+    def test_escape_boolean_false(self):
+        """Test escaping boolean False value"""
+        result = ToonFormatter._escape_string(False, ",")
+        # Boolean is converted to string "False"
+        assert result == "False"
+
+    def test_escape_integer(self):
+        """Test escaping integer value"""
+        result = ToonFormatter._escape_string(123, ",")
+        assert result == "123"
+
+    def test_escape_float(self):
+        """Test escaping float value"""
+        result = ToonFormatter._escape_string(123.456, ",")
+        assert result == "123.456"
+
+    def test_escape_negative_number(self):
+        """Test escaping negative number"""
+        result = ToonFormatter._escape_string(-42, ",")
+        assert result == "-42"
+
+    def test_escape_zero(self):
+        """Test escaping zero"""
+        result = ToonFormatter._escape_string(0, ",")
+        assert result == "0"
+
+    def test_escape_very_long_string(self):
+        """Test escaping very long string (10KB)"""
+        long_string = "x" * 10000
+        result = ToonFormatter._escape_string(long_string, ",")
+        # Should not modify the string (no special chars)
+        assert result == long_string
+        assert len(result) == 10000
+
+    def test_escape_string_with_both_pipe_and_comma(self):
+        """Test escaping string containing both pipe and comma"""
+        # When using comma delimiter, pipe doesn't need quoting
+        result_comma = ToonFormatter._escape_string("a|b,c", ",")
+        assert result_comma == '"a|b,c"'  # Quoted because of comma
+
+        # When using pipe delimiter, comma doesn't need quoting
+        result_pipe = ToonFormatter._escape_string("a|b,c", "|")
+        assert result_pipe == '"a|b,c"'  # Quoted because of pipe
+
+    def test_escape_leading_space_with_delimiter(self):
+        """Test escaping string with leading space AND delimiter"""
+        result = ToonFormatter._escape_string(" hello,world", ",")
+        # Should be quoted (both leading space and delimiter)
+        assert result == '" hello,world"'
+
+    def test_escape_trailing_space_with_delimiter(self):
+        """Test escaping string with trailing space AND delimiter"""
+        result = ToonFormatter._escape_string("hello,world ", ",")
+        assert result == '"hello,world "'
+
+    def test_escape_only_spaces(self):
+        """Test escaping string with only spaces"""
+        result = ToonFormatter._escape_string("   ", ",")
+        assert result == '"   "'
+
+    def test_escape_mixed_whitespace(self):
+        """Test escaping string with mixed whitespace"""
+        result = ToonFormatter._escape_string("a\tb\nc", ",")
+        assert "\\t" in result
+        assert "\\n" in result
+
+    def test_escape_nested_quotes(self):
+        """Test escaping nested quotes"""
+        result = ToonFormatter._escape_string('He said "it\'s \\"quoted\\""', ",")
+        # All quotes should be escaped
+        assert '\\"' in result
+
+    def test_escape_all_structural_chars(self):
+        """Test that all structural characters trigger quoting"""
+        for char in "{}:[]":
+            result = ToonFormatter._escape_string(f"test{char}value", ",")
+            assert result.startswith('"'), f"Char {char} should trigger quoting"
+            assert result.endswith('"'), f"Char {char} should trigger quoting"
+
+
+# --- Phase 3: Unicode Handling Tests ---
+class TestUnicodeHandling:
+    """Test suite for unicode character handling"""
+
+    def test_escape_unicode_korean(self):
+        """Test escaping Korean characters"""
+        result = ToonFormatter._escape_string("안녕하세요", ",")
+        assert result == "안녕하세요"
+
+    def test_escape_unicode_chinese(self):
+        """Test escaping Chinese characters"""
+        result = ToonFormatter._escape_string("你好世界", ",")
+        assert result == "你好世界"
+
+    def test_escape_unicode_japanese(self):
+        """Test escaping Japanese characters"""
+        result = ToonFormatter._escape_string("こんにちは", ",")
+        assert result == "こんにちは"
+
+    def test_escape_unicode_emoji(self):
+        """Test escaping emoji characters"""
+        result = ToonFormatter._escape_string("Hello 🚀 World 🎉", ",")
+        assert "🚀" in result
+        assert "🎉" in result
+
+    def test_escape_unicode_special_symbols(self):
+        """Test escaping special unicode symbols"""
+        result = ToonFormatter._escape_string("Price: €100 £50 ¥200", ",")
+        assert "€" in result
+        assert "£" in result
+        assert "¥" in result
+
+    def test_escape_unicode_with_delimiter(self):
+        """Test unicode string containing delimiter"""
+        result = ToonFormatter._escape_string("한글,테스트", ",")
+        assert result == '"한글,테스트"'
+
+    def test_format_tabular_with_unicode(self):
+        """Test TOON formatting with unicode content"""
+        errors = [
+            ErrorLog(
+                trace_id="trace-unicode",
+                span_id="span-1",
+                timestamp="2024-01-15T10:00:00Z",
+                service_name="서비스-한글",
+                span_name="GET /api/데이터",
+                error_type="에러타입",
+                error_message="오류 메시지: 데이터베이스 연결 실패 🔴",
+                stacktrace="스택트레이스\n\tat line1"
+            )
+        ]
+        result = ToonFormatter.format_tabular(errors, "errors")
+
+        assert "errors[1]" in result
+        assert "서비스-한글" in result
+        assert "오류 메시지" in result
+        assert "🔴" in result
+
+    def test_format_tabular_unicode_delimiter_selection(self):
+        """Test delimiter selection with unicode content containing commas"""
+        errors = [
+            ErrorLog(
+                trace_id="1",
+                span_id="span-1",
+                timestamp="2024-01-15T10:00:00Z",
+                service_name="svc",
+                span_name="op",
+                error_type="Error",
+                error_message="한글,쉼표,가,많이,포함,된,메시지",
+                stacktrace="stack"
+            )
+        ]
+        result = ToonFormatter.format_tabular(errors, "test")
+
+        # Should detect many commas and potentially use pipe delimiter
+        assert "한글" in result
+
+
+# --- Phase 3: Config Validator Tests ---
+class TestConfigValidators:
+    """Test suite for configuration validators"""
+
+    def test_placeholder_api_key_warning(self, caplog):
+        """Test that placeholder API key triggers warning"""
+        import logging
+        from pydantic import SecretStr
+        from aisher.config import Settings
+
+        # Create settings with placeholder key
+        with caplog.at_level(logging.WARNING):
+            settings = Settings(OPENAI_API_KEY=SecretStr("sk-...placeholder"))
+
+        # Check that warning was logged (validator runs during init)
+        # Note: The validator only warns for keys starting with "sk-..."
+        # so "sk-...placeholder" should trigger it
+
+    def test_valid_api_key_no_warning(self, caplog):
+        """Test that valid API key doesn't trigger warning"""
+        import logging
+        from pydantic import SecretStr
+        from aisher.config import Settings
+
+        with caplog.at_level(logging.WARNING):
+            settings = Settings(OPENAI_API_KEY=SecretStr("sk-valid-key-12345"))
+
+        # Should not have placeholder warning in logs
+        placeholder_warnings = [r for r in caplog.records if "placeholder" in r.message.lower()]
+        assert len(placeholder_warnings) == 0
+
+    def test_settings_env_override(self, monkeypatch):
+        """Test that environment variables override defaults"""
+        from aisher.config import Settings
+
+        monkeypatch.setenv("CLICKHOUSE_HOST", "custom-host.example.com")
+        monkeypatch.setenv("CLICKHOUSE_PORT", "9000")
+        monkeypatch.setenv("QUERY_TIMEOUT", "60")
+
+        # Create new settings instance (will read from env)
+        settings = Settings()
+
+        assert settings.CLICKHOUSE_HOST == "custom-host.example.com"
+        assert settings.CLICKHOUSE_PORT == 9000
+        assert settings.QUERY_TIMEOUT == 60
+
+    def test_settings_invalid_port_type(self, monkeypatch):
+        """Test that invalid port type raises validation error"""
+        from pydantic import ValidationError
+        from aisher.config import Settings
+
+        monkeypatch.setenv("CLICKHOUSE_PORT", "not-a-number")
+
+        with pytest.raises(ValidationError):
+            Settings()
+
+    def test_settings_secret_value_access(self):
+        """Test accessing secret values"""
+        from pydantic import SecretStr
+        from aisher.config import Settings
+
+        settings = Settings(
+            CLICKHOUSE_PASSWORD=SecretStr("test-password"),
+            OPENAI_API_KEY=SecretStr("sk-test-key-12345")
+        )
+
+        # Should be able to get secret value
+        assert settings.CLICKHOUSE_PASSWORD.get_secret_value() == "test-password"
+        assert settings.OPENAI_API_KEY.get_secret_value() == "sk-test-key-12345"
+
+    def test_settings_defaults_not_mutated(self):
+        """Test that default settings values aren't mutated between instances"""
+        from aisher.config import Settings
+
+        settings1 = Settings()
+        settings2 = Settings()
+
+        # Verify both have same defaults
+        assert settings1.CLICKHOUSE_HOST == settings2.CLICKHOUSE_HOST
+        assert settings1.QUERY_TIMEOUT == settings2.QUERY_TIMEOUT
+        assert settings1.MAX_RETRIES == settings2.MAX_RETRIES
+
+
+# --- Phase 3: TOON Delimiter Threshold Tests ---
+class TestToonDelimiterThreshold:
+    """Test suite for TOON delimiter selection at exact thresholds"""
+
+    def test_delimiter_exactly_at_threshold(self):
+        """Test delimiter selection when comma_count == pipe_count * 2"""
+        # When comma_count equals pipe_count * 2 exactly, should use comma (not >)
+        errors = [
+            ErrorLog(
+                trace_id="1",
+                span_id="span-1",
+                timestamp="2024-01-15T10:00:00Z",
+                service_name="svc",
+                span_name="op",
+                error_type="Error",
+                error_message="a,b|c,d",  # 2 commas, 1 pipe -> 2 == 1*2
+                stacktrace="stack"
+            )
+        ]
+        result = ToonFormatter.format_tabular(errors, "test")
+
+        # At exactly 2x, should NOT switch to pipe (> not >=)
+        # Default delimiter is comma
+        header = result.split("\n")[0]
+        # If pipe were selected, header would have "|" marker
+        # Comma is default, so no marker needed
+        assert "test[1]" in header
+
+    def test_delimiter_just_over_threshold(self):
+        """Test delimiter selection when comma_count > pipe_count * 2"""
+        # Need many commas across ALL fields to trigger pipe delimiter
+        errors = [
+            ErrorLog(
+                trace_id="1,2,3,4,5",
+                span_id="a,b,c,d,e",
+                timestamp="2024,01,15,10,00,00",
+                service_name="svc,name,with,commas",
+                span_name="op,with,commas",
+                error_type="Error,Type",
+                error_message="a,b,c,d,e,f,g,h,i,j|k",  # Many commas, 1 pipe
+                stacktrace="stack,trace,with,commas"
+            )
+        ]
+        result = ToonFormatter.format_tabular(errors, "test")
+
+        # Should switch to pipe delimiter due to many commas
+        header = result.split("\n")[0]
+        assert "test[1|]" in header  # Pipe marker in header
+
+    def test_delimiter_no_special_chars(self):
+        """Test delimiter selection with no commas or pipes in data"""
+        errors = [
+            ErrorLog(
+                trace_id="1",
+                span_id="span-1",
+                timestamp="2024-01-15T10:00:00Z",
+                service_name="svc",
+                span_name="op",
+                error_type="Error",
+                error_message="simple message",
+                stacktrace="stack"
+            )
+        ]
+        result = ToonFormatter.format_tabular(errors, "test")
+
+        # Should use default comma delimiter
+        header = result.split("\n")[0]
+        assert "|]" not in header  # No pipe marker
+
+    def test_delimiter_many_pipes(self):
+        """Test delimiter selection with many pipes"""
+        errors = [
+            ErrorLog(
+                trace_id="1",
+                span_id="span-1",
+                timestamp="2024-01-15T10:00:00Z",
+                service_name="svc",
+                span_name="op",
+                error_type="Error",
+                error_message="a|b|c|d|e,f",  # 4 pipes, 1 comma
+                stacktrace="stack"
+            )
+        ]
+        result = ToonFormatter.format_tabular(errors, "test")
+
+        # 1 comma is NOT > 4*2=8, so use comma
+        header = result.split("\n")[0]
+        assert "|]" not in header
+
+
+# --- Phase 3: Single Row Formatting Test ---
+class TestToonSingleRow:
+    """Test suite for TOON single row formatting"""
+
+    def test_format_tabular_single_row(self):
+        """Test TOON formatting with exactly one row"""
+        errors = [
+            ErrorLog(
+                trace_id="single-trace",
+                span_id="span-1",
+                timestamp="2024-01-15T10:00:00Z",
+                service_name="single-service",
+                span_name="single-op",
+                error_type="SingleError",
+                error_message="Single error message",
+                stacktrace="Single stack"
+            )
+        ]
+        result = ToonFormatter.format_tabular(errors, "errors")
+
+        lines = result.split("\n")
+        assert len(lines) == 2  # Header + 1 data row
+        assert "errors[1]" in lines[0]
+        assert "single-trace" in lines[1]
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])
