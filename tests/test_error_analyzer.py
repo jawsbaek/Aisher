@@ -776,5 +776,604 @@ class TestEdgeCases:
         assert "errors[1]" in result
 
 
+# --- Phase 1: Repository Retry Logic Tests ---
+class TestRepositoryRetryLogic:
+    """Test suite for repository retry logic with exponential backoff"""
+
+    @pytest.mark.asyncio
+    async def test_fetch_errors_retries_on_database_error(self, monkeypatch):
+        """Test that DatabaseError triggers retry with exponential backoff"""
+        from clickhouse_connect.driver.exceptions import DatabaseError
+
+        call_count = 0
+        call_times = []
+
+        async def mock_fetch_internal(self, limit, time_window_minutes):
+            nonlocal call_count
+            call_count += 1
+            call_times.append(asyncio.get_event_loop().time())
+            if call_count < 3:
+                raise DatabaseError("Connection lost")
+            return []
+
+        repo = SigNozRepository()
+        monkeypatch.setattr(repo, "_fetch_errors_internal", lambda l, t: mock_fetch_internal(repo, l, t))
+
+        result = await repo.fetch_errors(limit=5, time_window_minutes=30)
+
+        assert call_count == 3
+        assert result == []
+        await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_fetch_errors_retries_on_timeout_error(self, monkeypatch):
+        """Test that TimeoutError triggers retry"""
+        call_count = 0
+
+        async def mock_fetch_internal(self, limit, time_window_minutes):
+            nonlocal call_count
+            call_count += 1
+            if call_count < 2:
+                raise asyncio.TimeoutError()
+            return []
+
+        repo = SigNozRepository()
+        monkeypatch.setattr(repo, "_fetch_errors_internal", lambda l, t: mock_fetch_internal(repo, l, t))
+
+        result = await repo.fetch_errors(limit=5, time_window_minutes=30)
+
+        assert call_count == 2
+        assert result == []
+        await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_fetch_errors_exhausts_max_retries(self, monkeypatch):
+        """Test that retries are exhausted after MAX_RETRIES attempts"""
+        from clickhouse_connect.driver.exceptions import DatabaseError
+
+        call_count = 0
+
+        async def mock_fetch_internal(self, limit, time_window_minutes):
+            nonlocal call_count
+            call_count += 1
+            raise DatabaseError("Persistent failure")
+
+        # Mock settings.MAX_RETRIES to speed up test
+        monkeypatch.setattr("aisher.repository.settings.MAX_RETRIES", 3)
+
+        repo = SigNozRepository()
+        monkeypatch.setattr(repo, "_fetch_errors_internal", lambda l, t: mock_fetch_internal(repo, l, t))
+
+        result = await repo.fetch_errors(limit=5, time_window_minutes=30)
+
+        assert call_count == 3  # MAX_RETRIES attempts
+        assert result == []
+        await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_fetch_errors_unexpected_error_no_retry(self, monkeypatch):
+        """Test that unexpected errors don't trigger retry"""
+        call_count = 0
+
+        async def mock_fetch_internal(self, limit, time_window_minutes):
+            nonlocal call_count
+            call_count += 1
+            raise RuntimeError("Unexpected error")
+
+        repo = SigNozRepository()
+        monkeypatch.setattr(repo, "_fetch_errors_internal", lambda l, t: mock_fetch_internal(repo, l, t))
+
+        result = await repo.fetch_errors(limit=5, time_window_minutes=30)
+
+        assert call_count == 1  # No retry for unexpected errors
+        assert result == []
+        await repo.close()
+
+
+# --- Phase 1: Parameter Boundary Tests ---
+class TestParameterBoundaries:
+    """Test suite for parameter boundary conditions"""
+
+    @pytest.mark.asyncio
+    async def test_fetch_errors_limit_minimum_boundary(self):
+        """Test limit=1 (minimum valid value)"""
+        repo = SigNozRepository()
+        try:
+            # Should not raise - limit=1 is valid
+            # We just test the validation passes, not actual query
+            with patch.object(repo, '_fetch_errors_internal', new_callable=AsyncMock) as mock:
+                mock.return_value = []
+                result = await repo.fetch_errors(limit=1, time_window_minutes=60)
+                mock.assert_called_once_with(1, 60)
+        finally:
+            await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_fetch_errors_limit_maximum_boundary(self):
+        """Test limit=1000 (maximum valid value)"""
+        repo = SigNozRepository()
+        try:
+            with patch.object(repo, '_fetch_errors_internal', new_callable=AsyncMock) as mock:
+                mock.return_value = []
+                result = await repo.fetch_errors(limit=1000, time_window_minutes=60)
+                mock.assert_called_once_with(1000, 60)
+        finally:
+            await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_fetch_errors_time_window_minimum_boundary(self):
+        """Test time_window_minutes=1 (minimum valid value)"""
+        repo = SigNozRepository()
+        try:
+            with patch.object(repo, '_fetch_errors_internal', new_callable=AsyncMock) as mock:
+                mock.return_value = []
+                result = await repo.fetch_errors(limit=10, time_window_minutes=1)
+                mock.assert_called_once_with(10, 1)
+        finally:
+            await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_fetch_errors_time_window_maximum_boundary(self):
+        """Test time_window_minutes=10080 (maximum valid value - 1 week)"""
+        repo = SigNozRepository()
+        try:
+            with patch.object(repo, '_fetch_errors_internal', new_callable=AsyncMock) as mock:
+                mock.return_value = []
+                result = await repo.fetch_errors(limit=10, time_window_minutes=10080)
+                mock.assert_called_once_with(10, 10080)
+        finally:
+            await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_fetch_errors_limit_below_minimum(self):
+        """Test limit=0 raises ValueError"""
+        repo = SigNozRepository()
+        try:
+            with pytest.raises(ValueError, match="limit must be between 1 and 1000"):
+                await repo.fetch_errors(limit=0, time_window_minutes=60)
+        finally:
+            await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_fetch_errors_limit_above_maximum(self):
+        """Test limit=1001 raises ValueError"""
+        repo = SigNozRepository()
+        try:
+            with pytest.raises(ValueError, match="limit must be between 1 and 1000"):
+                await repo.fetch_errors(limit=1001, time_window_minutes=60)
+        finally:
+            await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_fetch_errors_time_window_below_minimum(self):
+        """Test time_window_minutes=0 raises ValueError"""
+        repo = SigNozRepository()
+        try:
+            with pytest.raises(ValueError, match="time_window_minutes must be between 1 and 10080"):
+                await repo.fetch_errors(limit=10, time_window_minutes=0)
+        finally:
+            await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_fetch_errors_time_window_above_maximum(self):
+        """Test time_window_minutes=10081 raises ValueError"""
+        repo = SigNozRepository()
+        try:
+            with pytest.raises(ValueError, match="time_window_minutes must be between 1 and 10080"):
+                await repo.fetch_errors(limit=10, time_window_minutes=10081)
+        finally:
+            await repo.close()
+
+
+# --- Phase 1: Main Pipeline Exception Handling Tests ---
+class TestMainExceptionHandling:
+    """Test suite for main pipeline exception handling"""
+
+    @pytest.mark.asyncio
+    async def test_main_keyboard_interrupt_cleanup(self, monkeypatch, capsys):
+        """Test that KeyboardInterrupt triggers proper cleanup"""
+        from aisher import main as main_module
+
+        close_called = False
+
+        async def mock_fetch(*args, **kwargs):
+            raise KeyboardInterrupt()
+
+        async def mock_close(self):
+            nonlocal close_called
+            close_called = True
+
+        monkeypatch.setattr(SigNozRepository, "fetch_errors", mock_fetch)
+        monkeypatch.setattr(SigNozRepository, "close", mock_close)
+
+        await main_module.main()
+
+        # Verify cleanup happened
+        assert close_called
+
+    @pytest.mark.asyncio
+    async def test_main_generic_exception_cleanup(self, monkeypatch, capsys):
+        """Test that generic exceptions trigger proper cleanup"""
+        from aisher import main as main_module
+
+        close_called = False
+
+        async def mock_fetch(*args, **kwargs):
+            raise RuntimeError("Database exploded")
+
+        async def mock_close(self):
+            nonlocal close_called
+            close_called = True
+
+        monkeypatch.setattr(SigNozRepository, "fetch_errors", mock_fetch)
+        monkeypatch.setattr(SigNozRepository, "close", mock_close)
+
+        await main_module.main()
+
+        # Verify cleanup happened despite exception
+        assert close_called
+
+    @pytest.mark.asyncio
+    async def test_main_exception_during_analyze(self, sample_errors, monkeypatch, capsys):
+        """Test exception handling during analyze phase"""
+        from aisher import main as main_module
+        from aisher.analyzer import BatchAnalyzer
+
+        close_called = False
+
+        async def mock_fetch(*args, **kwargs):
+            return sample_errors
+
+        async def mock_analyze(*args, **kwargs):
+            raise RuntimeError("LLM service unavailable")
+
+        async def mock_close(self):
+            nonlocal close_called
+            close_called = True
+
+        monkeypatch.setattr(SigNozRepository, "fetch_errors", mock_fetch)
+        monkeypatch.setattr(SigNozRepository, "close", mock_close)
+        monkeypatch.setattr(BatchAnalyzer, "analyze_batch", mock_analyze)
+
+        await main_module.main()
+
+        # Verify cleanup happened despite exception
+        assert close_called
+
+
+# --- Phase 2: Analyzer LLM Response Edge Cases ---
+class TestAnalyzerEdgeCases:
+    """Test suite for analyzer LLM response edge cases"""
+
+    @pytest.mark.asyncio
+    async def test_analyze_batch_empty_errors_list(self):
+        """Test analyze_batch with empty errors list"""
+        from aisher.analyzer import BatchAnalyzer
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = '{"root_cause": "No errors to analyze"}'
+
+        with patch('aisher.analyzer.acompletion', new_callable=AsyncMock) as mock_acompletion:
+            mock_acompletion.return_value = mock_response
+
+            analyzer = BatchAnalyzer()
+            result = await analyzer.analyze_batch([])
+
+            assert "_meta" in result
+            assert result["_meta"]["error_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_analyze_batch_empty_choices_array(self, sample_errors):
+        """Test handling when LLM returns empty choices array"""
+        from aisher.analyzer import BatchAnalyzer
+
+        mock_response = MagicMock()
+        mock_response.choices = []  # Empty choices
+
+        with patch('aisher.analyzer.acompletion', new_callable=AsyncMock) as mock_acompletion:
+            mock_acompletion.return_value = mock_response
+
+            analyzer = BatchAnalyzer()
+            result = await analyzer.analyze_batch(sample_errors)
+
+            # Should handle gracefully with error
+            assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_analyze_batch_none_message_content(self, sample_errors):
+        """Test handling when message content is None"""
+        from aisher.analyzer import BatchAnalyzer
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = None
+
+        with patch('aisher.analyzer.acompletion', new_callable=AsyncMock) as mock_acompletion:
+            mock_acompletion.return_value = mock_response
+
+            analyzer = BatchAnalyzer()
+            result = await analyzer.analyze_batch(sample_errors)
+
+            # Should handle gracefully with error
+            assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_analyze_batch_empty_string_content(self, sample_errors):
+        """Test handling when message content is empty string"""
+        from aisher.analyzer import BatchAnalyzer
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = ""
+
+        with patch('aisher.analyzer.acompletion', new_callable=AsyncMock) as mock_acompletion:
+            mock_acompletion.return_value = mock_response
+
+            analyzer = BatchAnalyzer()
+            result = await analyzer.analyze_batch(sample_errors)
+
+            # Empty string is invalid JSON
+            assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_analyze_batch_partial_json_response(self, sample_errors):
+        """Test handling when LLM returns incomplete JSON"""
+        from aisher.analyzer import BatchAnalyzer
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = '{"root_cause": "incomplete'  # Incomplete JSON
+
+        with patch('aisher.analyzer.acompletion', new_callable=AsyncMock) as mock_acompletion:
+            mock_acompletion.return_value = mock_response
+
+            analyzer = BatchAnalyzer()
+            result = await analyzer.analyze_batch(sample_errors)
+
+            assert "error" in result
+            assert "Invalid LLM response format" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_analyze_batch_json_missing_expected_fields(self, sample_errors):
+        """Test handling when JSON response is valid but missing expected fields"""
+        from aisher.analyzer import BatchAnalyzer
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        # Valid JSON but missing root_cause, severity, etc.
+        mock_response.choices[0].message.content = '{"unexpected_field": "value"}'
+
+        with patch('aisher.analyzer.acompletion', new_callable=AsyncMock) as mock_acompletion:
+            mock_acompletion.return_value = mock_response
+
+            analyzer = BatchAnalyzer()
+            result = await analyzer.analyze_batch(sample_errors)
+
+            # Current implementation accepts any valid JSON
+            # This test documents the current behavior
+            assert "_meta" in result
+            assert "unexpected_field" in result
+
+
+# --- Phase 2: Repository Client Reuse Tests ---
+class TestRepositoryClientReuse:
+    """Test suite for repository client reuse verification"""
+
+    @pytest.mark.asyncio
+    async def test_get_client_returns_same_instance(self, monkeypatch):
+        """Test that _get_client() returns the same client instance on multiple calls"""
+        mock_client = AsyncMock()
+        mock_client.close = AsyncMock()
+
+        call_count = 0
+
+        async def mock_get_async_client(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return mock_client
+
+        monkeypatch.setattr("aisher.repository.clickhouse_connect.get_async_client", mock_get_async_client)
+
+        repo = SigNozRepository()
+
+        # First call
+        client1 = await repo._get_client()
+        # Second call
+        client2 = await repo._get_client()
+
+        # Should be same instance
+        assert client1 is client2
+        # get_async_client should only be called once
+        assert call_count == 1
+
+        await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_close_clears_client(self, monkeypatch):
+        """Test that close() properly clears the client"""
+        mock_client = AsyncMock()
+        mock_client.close = AsyncMock()
+
+        async def mock_get_async_client(*args, **kwargs):
+            return mock_client
+
+        monkeypatch.setattr("aisher.repository.clickhouse_connect.get_async_client", mock_get_async_client)
+
+        repo = SigNozRepository()
+        await repo._get_client()
+
+        assert repo._client is not None
+
+        await repo.close()
+
+        # Client close should have been called
+        mock_client.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_close_idempotent(self, monkeypatch):
+        """Test that calling close() multiple times is safe (doesn't raise)"""
+        mock_client = AsyncMock()
+        mock_client.close = AsyncMock()
+
+        async def mock_get_async_client(*args, **kwargs):
+            return mock_client
+
+        monkeypatch.setattr("aisher.repository.clickhouse_connect.get_async_client", mock_get_async_client)
+
+        repo = SigNozRepository()
+        await repo._get_client()
+
+        # Call close multiple times - should not raise
+        await repo.close()
+        await repo.close()
+        await repo.close()
+
+        # Note: Current implementation doesn't clear _client after close,
+        # so close() is called on the underlying client multiple times.
+        # This documents current behavior - the test verifies no exception is raised.
+        assert mock_client.close.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_close_without_connection(self):
+        """Test that close() is safe when no connection was ever made"""
+        repo = SigNozRepository()
+
+        # Should not raise
+        await repo.close()
+
+
+# --- Phase 2: Main File I/O Error Handling Tests ---
+class TestMainFileIOErrors:
+    """Test suite for main pipeline file I/O error handling"""
+
+    @pytest.mark.asyncio
+    async def test_main_invalid_output_directory(self, sample_errors, monkeypatch):
+        """Test handling when output directory doesn't exist"""
+        from aisher import main as main_module
+        from aisher.analyzer import BatchAnalyzer
+
+        async def mock_fetch(*args, **kwargs):
+            return sample_errors
+
+        async def mock_close(*args, **kwargs):
+            pass
+
+        async def mock_analyze(*args, **kwargs):
+            return {"root_cause": "Test issue"}
+
+        monkeypatch.setattr(SigNozRepository, "fetch_errors", mock_fetch)
+        monkeypatch.setattr(SigNozRepository, "close", mock_close)
+        monkeypatch.setattr(BatchAnalyzer, "analyze_batch", mock_analyze)
+        monkeypatch.setenv("AISHER_OUTPUT_DIR", "/nonexistent/directory/path")
+
+        # Should not raise, but handle gracefully via exception handler
+        await main_module.main()
+
+    @pytest.mark.asyncio
+    async def test_main_output_with_valid_directory(self, sample_errors, monkeypatch, tmp_path):
+        """Test successful file output to valid directory"""
+        from aisher import main as main_module
+        from aisher.analyzer import BatchAnalyzer
+
+        async def mock_fetch(*args, **kwargs):
+            return sample_errors
+
+        async def mock_close(*args, **kwargs):
+            pass
+
+        async def mock_analyze(*args, **kwargs):
+            return {"root_cause": "Test issue", "severity": "low"}
+
+        monkeypatch.setattr(SigNozRepository, "fetch_errors", mock_fetch)
+        monkeypatch.setattr(SigNozRepository, "close", mock_close)
+        monkeypatch.setattr(BatchAnalyzer, "analyze_batch", mock_analyze)
+        monkeypatch.setenv("AISHER_OUTPUT_DIR", str(tmp_path))
+
+        await main_module.main()
+
+        # Check output file was created
+        output_files = list(tmp_path.glob("analysis_*.json"))
+        assert len(output_files) == 1
+
+        # Verify content
+        import json
+        with open(output_files[0]) as f:
+            content = json.load(f)
+            assert content["root_cause"] == "Test issue"
+
+
+# --- Phase 2: Additional Stacktrace Truncation Boundary Tests ---
+class TestStacktraceTruncationBoundaries:
+    """Test suite for stacktrace truncation boundary conditions"""
+
+    def test_truncate_stacktrace_exactly_at_max_length(self):
+        """Test stacktrace exactly at STACK_MAX_LENGTH (600 chars)"""
+        repo = SigNozRepository()
+        stack = "x" * 600  # Exactly at limit
+        result = repo._truncate_stacktrace(stack)
+        # Should NOT be truncated
+        assert result == stack
+        assert "...[truncated]..." not in result
+
+    def test_truncate_stacktrace_one_over_max_length(self):
+        """Test stacktrace at STACK_MAX_LENGTH + 1 (601 chars)"""
+        repo = SigNozRepository()
+        stack = "x" * 601  # One over limit
+        result = repo._truncate_stacktrace(stack)
+        # Should be truncated with marker
+        assert "...[truncated]..." in result
+        # Result should be HEAD(250) + marker + TAIL(350)
+        # This may be longer than input but prevents unbounded growth
+        assert result.startswith("x" * 250)
+        assert result.endswith("x" * 350)
+
+    def test_truncate_stacktrace_shorter_than_head_length(self):
+        """Test stacktrace shorter than STACK_HEAD_LENGTH (250 chars)"""
+        repo = SigNozRepository()
+        stack = "x" * 100  # Much shorter than head length
+        result = repo._truncate_stacktrace(stack)
+        # Should NOT be truncated
+        assert result == stack
+
+    def test_truncate_stacktrace_empty_string(self):
+        """Test empty string stacktrace"""
+        repo = SigNozRepository()
+        result = repo._truncate_stacktrace("")
+        assert result == ""
+
+    def test_truncate_json_attribute_exactly_at_max(self):
+        """Test JSON attribute exactly at JSON_ATTR_MAX_LENGTH (2000 chars)"""
+        repo = SigNozRepository()
+        json_str = "x" * 2000  # Exactly at limit
+        result = repo._truncate_json_attribute(json_str)
+        # Should NOT be truncated
+        assert result == json_str
+        assert "...[truncated]" not in result
+
+    def test_truncate_json_attribute_one_over_max(self):
+        """Test JSON attribute at JSON_ATTR_MAX_LENGTH + 1 (2001 chars)"""
+        repo = SigNozRepository()
+        json_str = "x" * 2001  # One over limit
+        result = repo._truncate_json_attribute(json_str)
+        # Should be truncated with marker
+        assert "...[truncated]" in result
+        # Result should be first 2000 chars + marker
+        assert result.startswith("x" * 2000)
+        assert result == "x" * 2000 + "...[truncated]"
+
+    def test_truncate_json_attribute_none(self):
+        """Test None JSON attribute"""
+        repo = SigNozRepository()
+        result = repo._truncate_json_attribute(None)
+        assert result is None
+
+    def test_truncate_json_attribute_empty_string(self):
+        """Test empty string JSON attribute"""
+        repo = SigNozRepository()
+        result = repo._truncate_json_attribute("")
+        assert result is None  # Empty string is falsy
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])
