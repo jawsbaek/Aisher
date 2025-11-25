@@ -1,0 +1,104 @@
+name: Claude Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    # Optional: Only run on specific file changes
+    paths:
+      - "src/**/*.py"
+      - "tests/**/*.py"
+      - "pyproject.toml"
+      - "CLAUDE.md"
+
+jobs:
+  claude-review:
+    # Optional: Filter by PR author (uncomment to enable)
+    # if: |
+    #   github.event.pull_request.user.login == 'external-contributor' ||
+    #   github.event.pull_request.user.login == 'new-developer' ||
+    #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
+
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Claude Code Review
+        id: claude-review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            Please review this pull request thoroughly and provide detailed feedback.
+
+            ## Review Focus Areas
+
+            1. **Security** - Check for:
+               - SQL injection vulnerabilities in ClickHouse queries
+               - Secrets exposure (ensure SecretStr is used for credentials)
+               - Input validation and sanitization
+               - Authentication and authorization issues
+
+            2. **Code Quality** - Evaluate:
+               - Pydantic v2 best practices (BaseModel, Field, validators)
+               - Type hints completeness and correctness
+               - Code organization and modularity
+               - Error handling patterns (proper exception handling, logging)
+               - Async/await patterns (proper resource cleanup, no blocking calls)
+
+            3. **Performance** - Consider:
+               - Database query optimization
+               - Async operations efficiency
+               - Memory usage and resource management
+               - Token optimization for LLM calls
+
+            4. **Testing** - Assess:
+               - Test coverage for new code
+               - Test quality and edge cases
+               - Mock patterns for external dependencies
+               - Integration test completeness
+
+            5. **Documentation** - Check:
+               - Docstrings for new functions/classes
+               - Type hints as documentation
+               - Inline comments for complex logic
+               - README/CLAUDE.md updates if needed
+
+            ## Project Standards
+
+            Review the CLAUDE.md file in the repository for project-specific conventions:
+            - Python 3.10+ with uv package manager
+            - Pydantic v2 for data validation
+            - Async/await for I/O operations
+            - Black formatting (line length 100)
+            - Ruff linting
+
+            ## Review Instructions
+
+            1. Use `gh pr view ${{ github.event.pull_request.number }}` to see the PR details
+            2. Use `gh pr diff ${{ github.event.pull_request.number }}` to see the changes
+            3. Review the code thoroughly against the focus areas above
+            4. Use `gh pr comment ${{ github.event.pull_request.number }}` to post your review
+
+            Format your review as markdown with:
+            - Clear section headers (Security, Code Quality, Performance, Testing, Documentation)
+            - Specific code references with line numbers when relevant
+            - Constructive feedback with actionable suggestions
+            - Highlight both positive aspects and areas for improvement
+
+            Be thorough but concise. Focus on important issues rather than minor style preferences.
+
+          # Allow Claude Code to use gh CLI for PR operations
+          # See https://docs.claude.com/docs/claude-code/cli-reference for available options
+          claude_args: '--allowed-tools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr list:*),Bash(gh pr comment:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*)"'

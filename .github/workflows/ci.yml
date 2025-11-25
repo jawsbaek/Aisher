@@ -1,0 +1,79 @@
+name: CI - Tests and Coverage
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v4
+      with:
+        version: "latest"
+
+    - name: Set up Python ${{ matrix.python-version }}
+      run: uv python install ${{ matrix.python-version }}
+
+    - name: Install dependencies
+      run: |
+        uv sync --dev
+
+    - name: Run linting
+      run: |
+        uv run ruff check src/ tests/
+      continue-on-error: true
+
+    - name: Run formatting check
+      run: |
+        uv run black --check src/ tests/
+      continue-on-error: true
+
+    - name: Run tests with coverage
+      run: |
+        uv run pytest -v --cov=aisher --cov-report=term-missing --cov-report=xml --cov-report=html
+      env:
+        # Mock credentials for testing
+        CLICKHOUSE_HOST: localhost
+        CLICKHOUSE_PORT: 8123
+        CLICKHOUSE_USER: default
+        CLICKHOUSE_PASSWORD: test_password
+        CLICKHOUSE_DATABASE: signoz_traces
+        LLM_MODEL: gpt-4-turbo
+        OPENAI_API_KEY: sk-test-key
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v4
+      with:
+        file: ./coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+        fail_ci_if_error: false
+      env:
+        CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+    - name: Upload coverage HTML report
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: coverage-report-${{ matrix.python-version }}
+        path: htmlcov/
+        retention-days: 30
+
+    - name: Comment coverage on PR
+      if: github.event_name == 'pull_request' && matrix.python-version == '3.11'
+      uses: py-cov-action/python-coverage-comment-action@v3
+      with:
+        GITHUB_TOKEN: ${{ github.token }}
+        MINIMUM_GREEN: 80
+        MINIMUM_ORANGE: 60
