@@ -1,0 +1,202 @@
+name: Claude Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  claude-review:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Get changed files
+      id: changed-files
+      uses: tj-actions/changed-files@v44
+      with:
+        files: |
+          src/**/*.py
+          tests/**/*.py
+
+    - name: Review code with Claude
+      if: steps.changed-files.outputs.any_changed == 'true'
+      uses: actions/github-script@v7
+      env:
+        ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      with:
+        script: |
+          const fs = require('fs');
+          const path = require('path');
+
+          // Get changed files
+          const changedFiles = `${{ steps.changed-files.outputs.all_changed_files }}`.split(' ');
+
+          if (!process.env.ANTHROPIC_API_KEY) {
+            console.log('⚠️ ANTHROPIC_API_KEY not set. Skipping Claude review.');
+            return;
+          }
+
+          // Read file contents
+          let fileContents = '';
+          for (const file of changedFiles) {
+            if (file && fs.existsSync(file)) {
+              const content = fs.readFileSync(file, 'utf8');
+              fileContents += `\n\n--- ${file} ---\n${content}`;
+            }
+          }
+
+          if (!fileContents.trim()) {
+            console.log('No Python files changed.');
+            return;
+          }
+
+          // Build review prompt
+          const reviewPrompt = [
+            'You are a senior Python code reviewer. Review the following code changes and provide:',
+            '',
+            '1. **Security Issues** - Any security vulnerabilities (SQL injection, XSS, secrets exposure, etc.)',
+            '2. **Code Quality** - Code style, best practices, potential bugs',
+            '3. **Performance** - Performance concerns or optimizations',
+            '4. **Testing** - Missing test coverage or test quality issues',
+            '5. **Documentation** - Missing or unclear documentation',
+            '',
+            'Format your response as markdown with clear sections. Be concise but thorough.',
+            '',
+            'Changed files:',
+            fileContents,
+            '',
+            'Focus on:',
+            '- Pydantic v2 best practices',
+            '- Async/await patterns',
+            '- SQL injection prevention in ClickHouse queries',
+            '- SecretStr usage for credentials',
+            '- Type hints completeness',
+            '- Error handling patterns'
+          ].join('\n');
+
+          // Call Claude API
+          const response = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-api-key': process.env.ANTHROPIC_API_KEY,
+              'anthropic-version': '2023-06-01'
+            },
+            body: JSON.stringify({
+              model: 'claude-sonnet-4-5-20250929',
+              max_tokens: 4096,
+              messages: [{
+                role: 'user',
+                content: reviewPrompt
+              }]
+            })
+          });
+
+          if (!response.ok) {
+            const error = await response.text();
+            console.error('Claude API error:', error);
+            throw new Error(`Claude API failed: ${response.status}`);
+          }
+
+          const data = await response.json();
+          const review = data.content[0].text;
+
+          // Post review as comment
+          await github.rest.issues.createComment({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+            body: `## 🤖 Claude Code Review\n\n${review}\n\n---\n*Reviewed by Claude Sonnet 4.5*`
+          });
+
+    - name: Review with focus on project standards
+      if: steps.changed-files.outputs.any_changed == 'true'
+      uses: actions/github-script@v7
+      env:
+        ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      with:
+        script: |
+          const fs = require('fs');
+
+          if (!process.env.ANTHROPIC_API_KEY) {
+            console.log('⚠️ ANTHROPIC_API_KEY not set. Skipping standards check.');
+            return;
+          }
+
+          // Read CLAUDE.md for project standards
+          let claudeMd = '';
+          if (fs.existsSync('CLAUDE.md')) {
+            claudeMd = fs.readFileSync('CLAUDE.md', 'utf8');
+          }
+
+          const changedFiles = `${{ steps.changed-files.outputs.all_changed_files }}`.split(' ');
+
+          let fileContents = '';
+          for (const file of changedFiles) {
+            if (file && fs.existsSync(file)) {
+              const content = fs.readFileSync(file, 'utf8');
+              fileContents += `\n\n--- ${file} ---\n${content}`;
+            }
+          }
+
+          if (!fileContents.trim()) {
+            return;
+          }
+
+          // Build standards check prompt
+          const standardsPrompt = [
+            'Check if the following code changes comply with the project standards defined in CLAUDE.md.',
+            '',
+            'Project Standards (CLAUDE.md):',
+            claudeMd.substring(0, 3000),
+            '',
+            'Changed files:',
+            fileContents,
+            '',
+            'Respond with:',
+            '- ✅ **Compliant** - List what follows the standards',
+            '- ⚠️ **Issues** - List any deviations from project standards',
+            '- 💡 **Suggestions** - Optional improvements aligned with project style',
+            '',
+            'Be specific and reference the relevant sections from CLAUDE.md.'
+          ].join('\n');
+
+          const response = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-api-key': process.env.ANTHROPIC_API_KEY,
+              'anthropic-version': '2023-06-01'
+            },
+            body: JSON.stringify({
+              model: 'claude-sonnet-4-5-20250929',
+              max_tokens: 2048,
+              messages: [{
+                role: 'user',
+                content: standardsPrompt
+              }]
+            })
+          });
+
+          if (!response.ok) {
+            console.error('Standards check failed:', response.status);
+            return;
+          }
+
+          const data = await response.json();
+          const review = data.content[0].text;
+
+          await github.rest.issues.createComment({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+            body: `## 📋 Project Standards Check\n\n${review}\n\n---\n*Checked against CLAUDE.md standards*`
+          });
