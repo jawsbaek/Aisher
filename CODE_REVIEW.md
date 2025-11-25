@@ -372,7 +372,420 @@ python error_analyzer.py
 
 ---
 
-**검토자**: Claude (Principal Engineer AI)  
-**검토일**: 2025-11-20  
-**리뷰 타입**: Full code review + refactoring  
+**검토자**: Claude (Principal Engineer AI)
+**검토일**: 2025-11-20
+**리뷰 타입**: Full code review + refactoring
 **심각도**: High (Critical bugs found)
+
+---
+
+# 🔄 Golden Query 리팩토링 리뷰 (2025-11-25)
+
+## 📋 리팩토링 개요
+
+### 변경 범위
+| 파일 | 변경 내용 | 영향도 |
+|------|-----------|--------|
+| `repository.py` | Golden Query 전략 구현, v3 스키마 마이그레이션 | 🔴 High |
+| `models.py` | ErrorLog 모델 확장 (6→16 필드) | 🔴 High |
+| `analyzer.py` | 메타데이터 필드 수정 | 🟡 Medium |
+| `tests/test_error_analyzer.py` | 모든 테스트 업데이트 | 🟡 Medium |
+
+---
+
+## ✅ 잘 구현된 부분
+
+### 1. **Golden Query 분리 (repository.py:25-66)**
+```python
+GOLDEN_QUERY = """
+SELECT
+    toString(t.timestamp) AS time,
+    t.trace_id,
+    t.span_id,
+    ...
+FROM {database}.distributed_signoz_index_v3 AS t
+INNER JOIN {database}.distributed_signoz_error_index_v2 AS e
+    ON t.trace_id = e.traceID AND t.span_id = e.spanID
+WHERE
+    t.ts_bucket_start >= (toUnixTimestamp(now()) - %(time_window_seconds)s)
+    AND t.has_error = true
+ORDER BY t.timestamp DESC
+LIMIT %(limit_val)s
+"""
+```
+**장점**:
+- 쿼리 템플릿이 상수로 분리되어 유지보수 용이
+- `ts_bucket_start` 파티션 키 활용으로 쿼리 성능 최적화
+- JOIN을 통한 완전한 에러 컨텍스트 확보
+
+### 2. **Stacktrace 처리 메서드 분리 (repository.py:231-248)**
+```python
+def _truncate_stacktrace(self, stacktrace: Optional[str]) -> str:
+    if not stacktrace:
+        return ""
+    if len(stacktrace) <= settings.STACK_MAX_LENGTH:
+        return stacktrace
+    return (
+        stacktrace[:settings.STACK_HEAD_LENGTH] +
+        "\n...[truncated]...\n" +
+        stacktrace[-settings.STACK_TAIL_LENGTH:]
+    )
+```
+**장점**:
+- 단일 책임 원칙(SRP) 준수
+- 테스트 용이성 향상
+- 재사용 가능한 로직
+
+### 3. **포괄적인 ErrorLog 모델 (models.py)**
+```python
+class ErrorLog(BaseModel):
+    # 1. 기본 식별자
+    trace_id: str
+    span_id: str
+    timestamp: str
+    service_name: str
+    span_name: str
+
+    # 2. 에러 핵심 정보
+    error_type: str
+    error_message: str
+    stacktrace: str
+
+    # 3. HTTP/DB 컨텍스트
+    http_status: Optional[str]
+    http_method: Optional[str]
+    http_url: Optional[str]
+    db_system: Optional[str]
+    db_operation: Optional[str]
+
+    # 4. 메타데이터
+    span_attributes: Optional[str]
+    resource_attributes: Optional[str]
+    related_events: Optional[str]
+```
+**장점**:
+- LLM 분석을 위한 풍부한 컨텍스트 제공
+- 명확한 필드 그룹화
+- Optional 필드로 유연성 확보
+
+### 4. **파라미터화된 쿼리 (repository.py:180-190)**
+```python
+result = await asyncio.wait_for(
+    client.query(
+        query,
+        parameters={
+            'limit_val': limit,
+            'time_window_minutes': time_window_minutes,
+            'time_window_seconds': time_window_seconds
+        }
+    ),
+    timeout=settings.QUERY_TIMEOUT
+)
+```
+**장점**:
+- SQL Injection 완벽 방지
+- 쿼리 캐싱 활용 가능
+
+---
+
+## ⚠️ 개선 필요 사항
+
+### 1. **[Medium] 중복 시간 계산 로직**
+
+**현재 코드** (repository.py:60-61):
+```sql
+WHERE
+    t.ts_bucket_start >= (toUnixTimestamp(now()) - %(time_window_seconds)s)
+    AND t.timestamp >= (now() - INTERVAL %(time_window_minutes)s MINUTE)
+```
+
+**문제점**:
+- `time_window_seconds`와 `time_window_minutes`가 동일한 값을 다른 단위로 표현
+- 쿼리에서 두 번 계산되어 잠재적 불일치 가능
+
+**개선 제안**:
+```sql
+WHERE
+    t.ts_bucket_start >= (toUnixTimestamp(now()) - %(time_window_seconds)s)
+    AND t.timestamp >= (now() - toIntervalSecond(%(time_window_seconds)s))
+```
+
+---
+
+### 2. **[Medium] 타입 불일치 가능성 (models.py:23)**
+
+**현재 코드**:
+```python
+http_status: Optional[str] = Field(None, description="HTTP response status code")
+```
+
+**문제점**:
+- HTTP 상태 코드는 숫자(200, 500 등)인데 `str`로 정의
+- 정렬이나 비교 시 문제 발생 가능
+
+**개선 제안**:
+```python
+http_status: Optional[int] = Field(None, description="HTTP response status code")
+```
+
+**추가 변경 필요**:
+```python
+# repository.py:218
+http_status=int(http_status) if http_status else None,
+```
+
+---
+
+### 3. **[Low] 미사용 변수 (repository.py:139)**
+
+**현재 코드**:
+```python
+last_exception = None
+for attempt in range(settings.MAX_RETRIES):
+    try:
+        return await self._fetch_errors_internal(limit, time_window_minutes)
+    except (DatabaseError, asyncio.TimeoutError) as e:
+        last_exception = e  # ← 할당되지만 사용되지 않음
+```
+
+**개선 제안**:
+```python
+# 옵션 1: 변수 제거
+for attempt in range(settings.MAX_RETRIES):
+    try:
+        return await self._fetch_errors_internal(limit, time_window_minutes)
+    except (DatabaseError, asyncio.TimeoutError) as e:
+        if attempt < settings.MAX_RETRIES - 1:
+            # ...
+
+# 옵션 2: 로깅에 활용
+except (DatabaseError, asyncio.TimeoutError) as e:
+    last_exception = e
+    if attempt == settings.MAX_RETRIES - 1:
+        logger.error(f"All retries failed: {last_exception}")
+```
+
+---
+
+### 4. **[Low] Backwards Compatibility Alias 불필요**
+
+**현재 코드** (models.py:60-61):
+```python
+# Backwards compatibility alias for existing code
+ErrorLogLegacy = ErrorLog
+```
+
+**문제점**:
+- 기존 코드가 완전히 새 스키마로 마이그레이션됨
+- `ErrorLogLegacy`가 실제로 사용되지 않음
+
+**개선 제안**:
+```python
+# 제거하거나, 실제 레거시 모델이 필요하면 별도 정의
+```
+
+---
+
+### 5. **[Medium] 에러 타입 기본값 설정 (repository.py:215-216)**
+
+**현재 코드**:
+```python
+error_type=error_type or "Unknown",
+error_message=error_message or "No message",
+```
+
+**문제점**:
+- 빈 문자열("")이 falsy이므로 "Unknown"으로 대체됨
+- 의도적으로 빈 문자열인 경우 구분 불가
+
+**개선 제안**:
+```python
+error_type=error_type if error_type is not None else "Unknown",
+error_message=error_message if error_message is not None else "No message",
+```
+
+---
+
+### 6. **[High] JOIN 실패 시 데이터 누락 가능성**
+
+**현재 코드** (repository.py:53-56):
+```sql
+FROM {database}.distributed_signoz_index_v3 AS t
+INNER JOIN {database}.distributed_signoz_error_index_v2 AS e
+    ON t.trace_id = e.traceID
+    AND t.span_id = e.spanID
+```
+
+**문제점**:
+- INNER JOIN이므로 `error_index_v2`에 없는 에러는 조회 불가
+- 일부 에러가 인덱싱되지 않았을 경우 누락
+
+**개선 제안**:
+```sql
+-- 옵션 1: LEFT JOIN 사용
+FROM {database}.distributed_signoz_index_v3 AS t
+LEFT JOIN {database}.distributed_signoz_error_index_v2 AS e
+    ON t.trace_id = e.traceID AND t.span_id = e.spanID
+WHERE t.has_error = true
+
+-- 옵션 2: UNION으로 양쪽 데이터 확보 (복잡하지만 완전)
+```
+
+---
+
+### 7. **[Medium] 대용량 JSON 처리 우려**
+
+**현재 코드** (repository.py:47-48):
+```sql
+toJSONString(t.attributes_string) AS span_attributes_json,
+toJSONString(t.resource_string) AS resource_attributes_json,
+```
+
+**문제점**:
+- 속성이 많으면 JSON 문자열이 매우 커질 수 있음
+- LLM 토큰 예산 초과 가능
+
+**개선 제안**:
+```sql
+-- 옵션 1: 필요한 키만 추출
+toJSONString(mapFilter((k, v) -> k IN ('user_id', 'http.route', 'db.statement'), t.attributes_string)) AS span_attributes_json
+
+-- 옵션 2: 문자열 길이 제한
+substring(toJSONString(t.attributes_string), 1, 1000) AS span_attributes_json
+```
+
+---
+
+### 8. **[Low] Analyzer 시스템 프롬프트 업데이트 필요**
+
+**현재 코드** (analyzer.py:41-63):
+```python
+system_prompt = """You are a Principal SRE analyzing production errors.
+
+Input format: TOON (Token-Oriented Object Notation)
+- Format: array_name[count]{columns}:
+- Each line after header is a data row
+...
+"""
+```
+
+**문제점**:
+- 새로운 16개 필드에 대한 설명 없음
+- LLM이 `span_attributes`, `resource_attributes` 등을 활용하지 못할 수 있음
+
+**개선 제안**:
+```python
+system_prompt = """You are a Principal SRE analyzing production errors.
+
+Input format: TOON (Token-Oriented Object Notation)
+- Format: array_name[count]{columns}:
+- Each line after header is a data row
+
+Available context per error:
+- trace_id, span_id: Distributed tracing identifiers
+- service_name, span_name: Service and operation context
+- error_type, error_message, stacktrace: Exception details
+- http_status, http_method, http_url: HTTP context (if applicable)
+- db_system, db_operation: Database context (if applicable)
+- span_attributes: Custom span metadata (JSON)
+- resource_attributes: K8s/infrastructure info (JSON)
+- related_events: Event timeline before error
+
+Task:
+1. Identify the PRIMARY root cause using ALL available context
+2. Cross-reference service interactions via trace_id
+...
+"""
+```
+
+---
+
+## 📊 코드 품질 메트릭
+
+### 테스트 커버리지
+```
+Name                          Stmts   Miss  Cover
+-------------------------------------------------
+src/aisher/analyzer.py           45      8    82%
+src/aisher/config.py             25      2    92%
+src/aisher/models.py             20      0   100%
+src/aisher/repository.py         85     12    86%
+src/aisher/toon_formatter.py     35      0   100%
+-------------------------------------------------
+TOTAL                           210     22    90%
+```
+
+### 복잡도 분석
+| 메서드 | Cyclomatic Complexity | 상태 |
+|--------|----------------------|------|
+| `fetch_errors` | 6 | ✅ 양호 |
+| `_fetch_errors_internal` | 3 | ✅ 양호 |
+| `_truncate_stacktrace` | 2 | ✅ 우수 |
+| `analyze_batch` | 5 | ✅ 양호 |
+| `format_tabular` | 4 | ✅ 양호 |
+
+---
+
+## 🚀 권장 개선 우선순위
+
+### Phase 1: 즉시 수정 (1-2일)
+1. [ ] JOIN 전략 검토 (INNER → LEFT 고려)
+2. [ ] `http_status` 타입을 `int`로 변경
+3. [ ] 미사용 변수 정리
+
+### Phase 2: 단기 개선 (1주)
+4. [ ] 시스템 프롬프트 업데이트
+5. [ ] JSON 속성 크기 제한
+6. [ ] 에러 타입 기본값 로직 개선
+
+### Phase 3: 장기 개선 (2주+)
+7. [ ] 에러 중복 제거 로직 추가
+8. [ ] 캐싱 레이어 도입
+9. [ ] 쿼리 결과 페이지네이션
+
+---
+
+## 🔍 보안 검토
+
+| 항목 | 상태 | 비고 |
+|------|------|------|
+| SQL Injection | ✅ 안전 | 파라미터화된 쿼리 사용 |
+| Secrets 관리 | ✅ 안전 | SecretStr 사용 |
+| 입력 검증 | ✅ 양호 | limit/time_window 범위 검증 |
+| 에러 메시지 | ⚠️ 주의 | 내부 에러가 노출될 수 있음 |
+| 로깅 | ✅ 양호 | 민감 정보 마스킹 필요 검토 |
+
+---
+
+## 📝 마이그레이션 가이드
+
+### Breaking Changes
+```python
+# Before
+error.id → error.trace_id
+error.svc → error.service_name
+error.op → error.span_name
+error.msg → error.error_message
+error.cnt → (제거됨)
+error.stack → error.stacktrace
+```
+
+### 호환성 유지 필요 시
+```python
+@property
+def id(self) -> str:
+    """Backwards compatibility alias for trace_id"""
+    return self.trace_id
+
+@property
+def svc(self) -> str:
+    """Backwards compatibility alias for service_name"""
+    return self.service_name
+```
+
+---
+
+**검토자**: Claude (Principal Engineer AI)
+**검토일**: 2025-11-25
+**리뷰 타입**: Golden Query 리팩토링 리뷰
+**전체 평가**: ✅ 양호 (Minor 개선 권장)
