@@ -85,8 +85,7 @@ Output as JSON:
             result["_meta"] = {
                 "model": settings.LLM_MODEL,
                 "analyzed_at": datetime.utcnow().isoformat(),
-                "error_count": len(errors),
-                "total_occurrences": sum(e.cnt for e in errors)
+                "error_count": len(errors)
             }
 
             logger.info("✅ Analysis completed successfully")

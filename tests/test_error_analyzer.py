@@ -11,23 +11,43 @@ from aisher.config import Settings
 # --- Test Data ---
 @pytest.fixture
 def sample_errors() -> List[ErrorLog]:
-    """Sample error logs for testing"""
+    """Sample error logs for testing with new Golden Query schema"""
     return [
         ErrorLog(
-            id="trace-001",
-            svc="api-gateway",
-            op="GET /users",
-            msg="NullPointerException: user is null",
-            cnt=42,
-            stack="java.lang.NullPointerException\n\tat com.example.UserService.getUser(UserService.java:123)"
+            trace_id="abc123def456",
+            span_id="span-001",
+            timestamp="2024-01-15T10:30:00Z",
+            service_name="api-gateway",
+            span_name="GET /users",
+            error_type="NullPointerException",
+            error_message="NullPointerException: user is null",
+            stacktrace="java.lang.NullPointerException\n\tat com.example.UserService.getUser(UserService.java:123)",
+            http_status="500",
+            http_method="GET",
+            http_url="/api/users/123",
+            db_system=None,
+            db_operation=None,
+            span_attributes='{"user_id": "u123"}',
+            resource_attributes='{"k8s.pod.name": "api-pod-1"}',
+            related_events="log: Processing request"
         ),
         ErrorLog(
-            id="trace-002",
-            svc="payment-service",
-            op="POST /checkout",
-            msg="TimeoutException: Database connection timeout",
-            cnt=15,
-            stack="java.util.concurrent.TimeoutException\n\tat com.example.PaymentService.process(PaymentService.java:45)"
+            trace_id="xyz789ghi012",
+            span_id="span-002",
+            timestamp="2024-01-15T10:31:00Z",
+            service_name="payment-service",
+            span_name="POST /checkout",
+            error_type="TimeoutException",
+            error_message="TimeoutException: Database connection timeout",
+            stacktrace="java.util.concurrent.TimeoutException\n\tat com.example.PaymentService.process(PaymentService.java:45)",
+            http_status="503",
+            http_method="POST",
+            http_url="/api/checkout",
+            db_system="postgresql",
+            db_operation="SELECT",
+            span_attributes='{"order_id": "o456"}',
+            resource_attributes='{"k8s.pod.name": "payment-pod-2"}',
+            related_events="log: Connecting to database\nlog: Query started"
         ),
     ]
 
@@ -36,29 +56,39 @@ def complex_errors() -> List[ErrorLog]:
     """Errors with special characters for TOON escaping tests"""
     return [
         ErrorLog(
-            id="trace-003",
-            svc="data-processor",
-            op="parse_csv",
-            msg='Invalid data: "value" contains comma, pipe|bar',
-            cnt=5,
-            stack="Stack trace with\nnewlines\tand\ttabs"
+            trace_id="trace-003",
+            span_id="span-003",
+            timestamp="2024-01-15T10:32:00Z",
+            service_name="data-processor",
+            span_name="parse_csv",
+            error_type="ParseException",
+            error_message='Invalid data: "value" contains comma, pipe|bar',
+            stacktrace="Stack trace with\nnewlines\tand\ttabs",
+            http_status=None,
+            http_method=None,
+            http_url=None,
+            db_system=None,
+            db_operation=None,
+            span_attributes=None,
+            resource_attributes=None,
+            related_events=None
         ),
     ]
 
 # --- TOON Formatter Tests ---
 class TestToonFormatter:
     """Test suite for TOON format generation"""
-    
+
     def test_escape_string_basic(self):
         """Test basic string escaping"""
         result = ToonFormatter._escape_string("hello world", ",")
         assert result == "hello world"
-    
+
     def test_escape_string_with_delimiter(self):
         """Test escaping when string contains delimiter"""
         result = ToonFormatter._escape_string("hello,world", ",")
         assert result == '"hello,world"'
-    
+
     def test_escape_string_with_newline(self):
         """Test newline escaping - escapes newline but doesn't quote if no delimiter"""
         result = ToonFormatter._escape_string("line1\nline2", ",")
@@ -78,63 +108,66 @@ class TestToonFormatter:
 
         result = ToonFormatter._escape_string("{object}", ",")
         assert result == '"\\{object\\}"' or result == '"{object}"'
-    
+
     def test_escape_string_leading_trailing_spaces(self):
         """Test preservation of leading/trailing spaces"""
         result = ToonFormatter._escape_string(" padded ", ",")
         assert result == '" padded "'
-    
+
     def test_escape_null_value(self):
         """Test null value handling"""
         result = ToonFormatter._escape_string(None, ",")
         assert result == "null"
-    
+
     def test_format_tabular_basic(self, sample_errors):
         """Test basic TOON tabular format generation"""
         result = ToonFormatter.format_tabular(sample_errors, "errors")
-        
+
         # Check header format
         assert result.startswith("errors[2]{")
-        assert "id,svc,op,msg,cnt,stack" in result
-        
+        # New model has different fields
+        assert "trace_id" in result or "service_name" in result
+
         # Check data rows
         lines = result.split("\n")
         assert len(lines) == 3  # Header + 2 data rows
-        assert "trace-001" in lines[1]
+        assert "abc123def456" in lines[1]
         assert "api-gateway" in lines[1]
-    
+
     def test_format_tabular_with_special_chars(self, complex_errors):
         """Test TOON format with special characters"""
         result = ToonFormatter.format_tabular(complex_errors, "errors")
-        
+
         # Should handle quotes, commas, newlines
         assert "\\n" in result  # Escaped newlines
         assert '\\"' in result  # Escaped quotes
-    
+
     def test_format_tabular_delimiter_optimization(self):
         """Test automatic delimiter selection"""
         # Create data with many commas
         errors_with_commas = [
             ErrorLog(
-                id="1",
-                svc="svc",
-                op="op",
-                msg="error with, many, commas, here",
-                cnt=1,
-                stack="stack"
+                trace_id="1",
+                span_id="span-1",
+                timestamp="2024-01-15T10:00:00Z",
+                service_name="svc",
+                span_name="op",
+                error_type="Error",
+                error_message="error with, many, commas, here",
+                stacktrace="stack"
             )
         ]
         result = ToonFormatter.format_tabular(errors_with_commas, "test")
-        
+
         # Should prefer pipe delimiter when commas are common
         # Check if pipe is used in header or data
         assert "|" in result or "," in result  # One must be used
-    
+
     def test_format_tabular_empty_list(self):
         """Test handling of empty list"""
         result = ToonFormatter.format_tabular([], "errors")
         assert result == "errors[0]:"
-    
+
     def test_format_tabular_custom_array_name(self, sample_errors):
         """Test custom array name"""
         result = ToonFormatter.format_tabular(sample_errors, "exceptions")
@@ -160,9 +193,9 @@ class TestSigNozRepository:
             if errors:
                 error = errors[0]
                 assert isinstance(error, ErrorLog)
-                assert hasattr(error, 'id')
-                assert hasattr(error, 'svc')
-                assert hasattr(error, 'stack')
+                assert hasattr(error, 'trace_id')
+                assert hasattr(error, 'service_name')
+                assert hasattr(error, 'stacktrace')
         except Exception as e:
             pytest.skip(f"ClickHouse not available: {e}")
         finally:
@@ -240,10 +273,32 @@ class TestSigNozRepository:
 
     @pytest.mark.asyncio
     async def test_fetch_errors_with_mock_client(self, monkeypatch):
-        """Test fetch_errors with mocked client returning data"""
+        """Test fetch_errors with mocked client returning data (Golden Query format)"""
         mock_result = MagicMock()
+        # Golden Query row structure:
+        # (time, trace_id, span_id, service_name, span_name,
+        #  error_type, error_message, stacktrace,
+        #  http_status, http_method, http_url, db_system, db_operation,
+        #  span_attributes_json, resource_attributes_json, related_events)
         mock_result.result_rows = [
-            ("trace-123", "api-service", "GET /health", "Error msg", 5, "stack trace here")
+            (
+                "2024-01-15T10:30:00Z",  # time
+                "trace-123",              # trace_id
+                "span-456",               # span_id
+                "api-service",            # service_name
+                "GET /health",            # span_name
+                "RuntimeException",       # error_type
+                "Error msg",              # error_message
+                "stack trace here",       # stacktrace
+                "500",                    # http_status
+                "GET",                    # http_method
+                "/health",                # http_url
+                None,                     # db_system
+                None,                     # db_operation
+                '{"key": "value"}',       # span_attributes_json
+                '{"env": "prod"}',        # resource_attributes_json
+                "log: request started"    # related_events
+            )
         ]
 
         mock_client = AsyncMock()
@@ -256,9 +311,10 @@ class TestSigNozRepository:
         errors = await repo.fetch_errors(limit=10, time_window_minutes=60)
 
         assert len(errors) == 1
-        assert errors[0].id == "trace-123"
-        assert errors[0].svc == "api-service"
-        assert errors[0].cnt == 5
+        assert errors[0].trace_id == "trace-123"
+        assert errors[0].service_name == "api-service"
+        assert errors[0].error_type == "RuntimeException"
+        assert errors[0].http_status == "500"
         await repo.close()
 
     @pytest.mark.asyncio
@@ -267,7 +323,17 @@ class TestSigNozRepository:
         long_stack = "x" * 1000
         mock_result = MagicMock()
         mock_result.result_rows = [
-            ("trace-123", "svc", "op", "msg", 1, long_stack)
+            (
+                "2024-01-15T10:30:00Z",  # time
+                "trace-123",              # trace_id
+                "span-456",               # span_id
+                "svc",                    # service_name
+                "op",                     # span_name
+                "Error",                  # error_type
+                "msg",                    # error_message
+                long_stack,               # stacktrace
+                None, None, None, None, None, None, None, None
+            )
         ]
 
         mock_client = AsyncMock()
@@ -280,8 +346,8 @@ class TestSigNozRepository:
         errors = await repo.fetch_errors(limit=1)
 
         # Stack should be truncated
-        assert len(errors[0].stack) < len(long_stack)
-        assert "...[truncated]..." in errors[0].stack
+        assert len(errors[0].stacktrace) < len(long_stack)
+        assert "...[truncated]..." in errors[0].stacktrace
         await repo.close()
 
     @pytest.mark.asyncio
@@ -312,6 +378,27 @@ class TestSigNozRepository:
         result = await repo.ping()
         assert result is False
         await repo.close()
+
+    def test_truncate_stacktrace_short(self):
+        """Test that short stacktraces are not truncated"""
+        repo = SigNozRepository()
+        short_stack = "Error at line 1"
+        result = repo._truncate_stacktrace(short_stack)
+        assert result == short_stack
+
+    def test_truncate_stacktrace_none(self):
+        """Test that None stacktrace returns empty string"""
+        repo = SigNozRepository()
+        result = repo._truncate_stacktrace(None)
+        assert result == ""
+
+    def test_truncate_stacktrace_long(self):
+        """Test that long stacktraces are truncated"""
+        repo = SigNozRepository()
+        long_stack = "x" * 1000
+        result = repo._truncate_stacktrace(long_stack)
+        assert len(result) < len(long_stack)
+        assert "...[truncated]..." in result
 
 
 # --- Analyzer Tests (with mocks) ---
@@ -424,46 +511,48 @@ class TestBatchAnalyzer:
 # --- Integration Tests ---
 class TestIntegration:
     """End-to-end integration tests"""
-    
+
     def test_error_log_model_validation(self):
         """Test Pydantic model validation"""
-        # Valid model
+        # Valid model with new schema
         error = ErrorLog(
-            id="123",
-            svc="test-svc",
-            op="test-op",
-            msg="test message",
-            cnt=1,
-            stack="test stack"
+            trace_id="123",
+            span_id="span-1",
+            timestamp="2024-01-15T10:00:00Z",
+            service_name="test-svc",
+            span_name="test-op",
+            error_type="TestError",
+            error_message="test message",
+            stacktrace="test stack"
         )
-        assert error.id == "123"
-        
+        assert error.trace_id == "123"
+
         # Invalid model (missing required field)
         with pytest.raises(Exception):
-            ErrorLog(id="123", svc="test")
-    
+            ErrorLog(trace_id="123", service_name="test")
+
     def test_settings_validation(self):
         """Test settings model validation"""
         settings = Settings()
-        
+
         # Check defaults
         assert settings.CLICKHOUSE_HOST == "localhost"
         assert settings.QUERY_TIMEOUT == 30
-    
+
     @pytest.mark.asyncio
     async def test_full_pipeline_with_mocks(self, sample_errors, monkeypatch):
         """Test full pipeline with mocked dependencies"""
         # Mock repository
         async def mock_fetch(*args, **kwargs):
             return sample_errors
-        
+
         repo = SigNozRepository()
         monkeypatch.setattr(repo, "fetch_errors", mock_fetch)
-        
+
         # Fetch and format
         errors = await repo.fetch_errors()
         toon_output = ToonFormatter.format_tabular(errors, "errors")
-        
+
         # Verify output
         assert "errors[2]" in toon_output
         assert "NullPointerException" in toon_output
@@ -564,22 +653,39 @@ class TestErrorLogModel:
         """Test model can be serialized to JSON"""
         error = sample_errors[0]
         json_str = error.model_dump_json()
-        assert "trace-001" in json_str
+        assert "abc123def456" in json_str
         assert "api-gateway" in json_str
 
     def test_model_dict_conversion(self, sample_errors):
         """Test model can be converted to dict"""
         error = sample_errors[0]
         data = error.model_dump()
-        assert data["id"] == "trace-001"
-        assert data["cnt"] == 42
+        assert data["trace_id"] == "abc123def456"
+        assert data["service_name"] == "api-gateway"
 
     def test_model_schema(self):
         """Test model schema is generated"""
         schema = ErrorLog.model_json_schema()
         assert "properties" in schema
-        assert "id" in schema["properties"]
-        assert "svc" in schema["properties"]
+        assert "trace_id" in schema["properties"]
+        assert "service_name" in schema["properties"]
+
+    def test_model_optional_fields(self):
+        """Test that optional fields work correctly"""
+        error = ErrorLog(
+            trace_id="123",
+            span_id="span-1",
+            timestamp="2024-01-15T10:00:00Z",
+            service_name="svc",
+            span_name="op",
+            error_type="Error",
+            error_message="msg",
+            stacktrace="stack"
+            # Optional fields not provided
+        )
+        assert error.http_status is None
+        assert error.http_method is None
+        assert error.db_system is None
 
 
 # --- Performance Tests ---
@@ -590,12 +696,14 @@ class TestPerformance:
         """Test TOON formatting with large dataset"""
         large_dataset = [
             ErrorLog(
-                id=f"trace-{i}",
-                svc=f"service-{i % 10}",
-                op=f"operation-{i % 5}",
-                msg=f"Error message {i}",
-                cnt=i,
-                stack=f"Stack trace {i}" * 100  # Long stack
+                trace_id=f"trace-{i}",
+                span_id=f"span-{i}",
+                timestamp=f"2024-01-15T10:{i:02d}:00Z",
+                service_name=f"service-{i % 10}",
+                span_name=f"operation-{i % 5}",
+                error_type="RuntimeError",
+                error_message=f"Error message {i}",
+                stacktrace=f"Stack trace {i}" * 100  # Long stack
             )
             for i in range(100)
         ]
@@ -638,12 +746,14 @@ class TestEdgeCases:
         """Test that pipe delimiter is selected when data has many commas"""
         errors = [
             ErrorLog(
-                id="1",
-                svc="svc",
-                op="op",
-                msg="a,b,c,d,e,f,g,h,i,j",  # Many commas
-                cnt=1,
-                stack="stack"
+                trace_id="1",
+                span_id="span-1",
+                timestamp="2024-01-15T10:00:00Z",
+                service_name="svc",
+                span_name="op",
+                error_type="Error",
+                error_message="a,b,c,d,e,f,g,h,i,j",  # Many commas
+                stacktrace="stack"
             )
         ]
         result = ToonFormatter.format_tabular(errors, "test")
@@ -653,12 +763,14 @@ class TestEdgeCases:
     def test_error_log_with_special_characters(self):
         """Test ErrorLog with various special characters"""
         error = ErrorLog(
-            id="test-123",
-            svc="svc:name",
-            op="GET /api?param=value",
-            msg='Error: "Something" went wrong!',
-            cnt=100,
-            stack="Stack\n\tat line1\n\tat line2"
+            trace_id="test-123",
+            span_id="span-1",
+            timestamp="2024-01-15T10:00:00Z",
+            service_name="svc:name",
+            span_name="GET /api?param=value",
+            error_type="RuntimeError",
+            error_message='Error: "Something" went wrong!',
+            stacktrace="Stack\n\tat line1\n\tat line2"
         )
         result = ToonFormatter.format_tabular([error], "errors")
         assert "errors[1]" in result
